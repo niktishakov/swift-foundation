@@ -10,7 +10,8 @@ on:
 jobs:
   tests:
     name: Test (SwiftPM)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
+    # Fork test only: the Android emulator script that runs every test runner (swiftlang/github-workflows#327).
+    uses: niktishakov/github-workflows/.github/workflows/swift_package_test.yml@fork-test-android
     with:
       linux_swift_versions: '["nightly-main"]'
       windows_swift_versions: '["nightly-main"]'
