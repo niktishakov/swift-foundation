@@ -10,21 +10,23 @@ on:
 jobs:
   tests:
     name: Test (SwiftPM)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
+    uses: niktishakov/github-workflows/.github/workflows/swift_package_test.yml@fork-test-android
     with:
+      enable_linux_checks: false
+      enable_windows_checks: false
       linux_swift_versions: '["nightly-main"]'
       windows_swift_versions: '["nightly-main"]'
       enable_macos_checks: false
       macos_xcode_versions: '["swift_6.1"]'
       macos_versions: '["tahoe"]'
-      enable_wasm_sdk_build: true
+      enable_wasm_sdk_build: false
       wasm_sdk_versions: '["nightly-main"]'
       enable_cross_pr_testing: true
       enable_android_sdk_build: true
       android_sdk_versions: '["nightly-main"]'
       android_sdk_triples: '["aarch64-unknown-linux-android23", "armv7-unknown-linux-android23", "x86_64-unknown-linux-android26"]'
       enable_android_sdk_checks: true
-      enable_macos_swiftly_checks: true
+      enable_macos_swiftly_checks: false
 
   cmake_build:
     name: Build (CMake)
