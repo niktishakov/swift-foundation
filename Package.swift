@@ -42,7 +42,8 @@ let featureSettings: [SwiftSetting] = [
     .enableExperimentalFeature("ImportMacroAliases"),
     .enableUpcomingFeature("InferSendableFromCaptures"),
     .enableUpcomingFeature("MemberImportVisibility"),
-    .swiftLanguageMode(.v5)
+    .swiftLanguageMode(.v5),
+    .define("FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT"),
 ]
 
 var dependencies: [Package.Dependency] = []
