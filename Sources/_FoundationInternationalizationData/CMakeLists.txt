@@ -17,7 +17,9 @@ add_library(_FoundationInternationalizationData STATIC
     ListFormatLookup.swift
     PluralOperands.swift
     PluralRules.swift
-    PluralRulesData.swift)
+    PluralRulesData.swift
+    RelativeDateFormatData.swift
+    RelativeDateFormatLookup.swift)
 
 target_compile_options(_FoundationInternationalizationData PRIVATE
     "SHELL:$<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -enable-experimental-feature -Xfrontend AccessLevelOnImport>"

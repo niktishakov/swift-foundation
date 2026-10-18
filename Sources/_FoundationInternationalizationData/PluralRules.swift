@@ -120,7 +120,7 @@ package struct PluralRules: Sendable, Hashable {
 
     /// The identifier in the form the data uses: no keywords, `_` separators, a lowercase language, a
     /// title-case script, and an uppercase region.
-    private static func normalizedIdentifier(_ identifier: String) -> String {
+    internal static func normalizedIdentifier(_ identifier: String) -> String {
         let utf8 = identifier.utf8
         let end = utf8.firstIndex(of: UInt8(ascii: "@")) ?? utf8.endIndex
         var result = ""

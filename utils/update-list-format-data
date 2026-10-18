@@ -52,6 +52,7 @@ trap 'rm -rf "${bindir}"' EXIT
 tool="${bindir}/${commandName}"
 swiftc -parse-as-library \
     "${utilsDir}/list-format-data-schema.swift" \
+    "${utilsDir}/cldr-locale-aliases.swift" \
     "${utilsDir}/${commandName}-impl.swift" \
     -o "${tool}"
 
