@@ -209,6 +209,7 @@ let package = Package(
                 "Formatting/ListFormatData.json",
                 "Formatting/DateFormatData.json",
                 "Formatting/PluralRulesData.json",
+                "Formatting/RelativeDateFormatData.json",
             ],
             cSettings: wasiLibcCSettings,
             swiftSettings: [

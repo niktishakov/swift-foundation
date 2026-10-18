@@ -15,7 +15,7 @@
 // Fallback: root
 //===----------------------------------------------------------------------===//
 
-#if FOUNDATION_PLURAL_RULES_SWIFT
+#if FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT
 
 internal enum PluralRulesData {
     // The rule set a lookup uses when it finds no data for a locale.
@@ -1320,4 +1320,4 @@ internal enum PluralRulesData {
     ]
 }
 
-#endif // FOUNDATION_PLURAL_RULES_SWIFT
+#endif // FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT

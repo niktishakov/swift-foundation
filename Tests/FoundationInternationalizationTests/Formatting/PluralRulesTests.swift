@@ -12,7 +12,7 @@
 
 import Testing
 
-#if canImport(_FoundationInternationalizationData) && FOUNDATION_PLURAL_RULES_SWIFT
+#if canImport(_FoundationInternationalizationData) && (FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT)
 import _FoundationInternationalizationData
 
 #if canImport(FoundationInternationalization)

@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if FOUNDATION_PLURAL_RULES_SWIFT
+#if FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT
 
 /// The plural category of a number, which selects a grammatical form such as "1 day" or "2 days".
 package enum PluralCategory: String, Sendable, Hashable, CaseIterable {
@@ -118,7 +118,7 @@ package struct PluralRules: Sendable, Hashable {
     // MARK: - Locale lookup
 
     /// The identifier in the form the data uses: no keywords, `_` separators, a lowercase language, a title-case script, and an uppercase region.
-    private static func normalizedIdentifier(_ identifier: String) -> String {
+    internal static func normalizedIdentifier(_ identifier: String) -> String {
         let utf8 = identifier.utf8
         var result: [UInt8] = []
         result.reserveCapacity(utf8.count)
@@ -261,4 +261,4 @@ internal struct PluralLocaleEntry: Sendable {
     }
 }
 
-#endif // FOUNDATION_PLURAL_RULES_SWIFT
+#endif // FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT

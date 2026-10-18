@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if FOUNDATION_PLURAL_RULES_SWIFT
+#if FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT
 
 /// The values of a number that plural rules test, for the number as it is shown.
 ///
@@ -122,4 +122,4 @@ package struct PluralOperands: Sendable, Hashable {
     }
 }
 
-#endif // FOUNDATION_PLURAL_RULES_SWIFT
+#endif // FOUNDATION_PLURAL_RULES_SWIFT || FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT
