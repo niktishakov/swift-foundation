@@ -1,0 +1,72 @@
+name: Fork test only - corelibs with Essentials locks
+
+on:
+  push:
+    branches: [essentials-locks-corelibs-lab]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corelibs:
+    name: corelibs (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    container: swiftlang/swift:nightly-main-noble
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # baseline: corelibs and swift-foundation unchanged (upstream main of swift-foundation)
+        # prototype: swift-foundation with the lock classes, corelibs without its own lock classes
+        variant: [baseline, prototype]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: swift-foundation
+          fetch-depth: 50
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y git libcurl4-openssl-dev libxml2-dev
+      - name: Get sources
+        shell: bash
+        run: |
+          set -eux
+          git clone -q https://github.com/swiftlang/swift-corelibs-foundation
+          git -C swift-corelibs-foundation checkout -q 5564bd1fb2a0e62be2381d600c204a8b3b0e0e8e
+          git clone -q --depth 1 https://github.com/swiftlang/swift-foundation-icu
+          git -C swift-foundation-icu rev-parse HEAD
+          if [ "${{ matrix.variant }}" = baseline ]; then
+            git -C swift-foundation checkout -q b2f7c0af
+          else
+            git -C swift-foundation checkout -q 09a2d664
+            git -C swift-corelibs-foundation apply ../swift-foundation/.github/lab/corelibs-remove-locks.patch || git -C swift-corelibs-foundation apply "$GITHUB_WORKSPACE/swift-foundation/.github/lab/corelibs-remove-locks.patch"
+          fi
+          git -C swift-foundation log --oneline -1
+          git -C swift-corelibs-foundation status --short
+      - name: Build corelibs
+        shell: bash
+        working-directory: swift-corelibs-foundation
+        env:
+          SWIFTCI_USE_LOCAL_DEPS: "1"
+        run: |
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee ../build.log | grep -E "error:|Compiling|Build complete" | grep -v "^\[" | head -400
+      - name: Run lock tests
+        shell: bash
+        working-directory: swift-corelibs-foundation
+        env:
+          SWIFTCI_USE_LOCAL_DEPS: "1"
+        run: |
+          set -o pipefail
+          swift test --skip-build --filter 'TestNSLock|TestThread|TestOperation' 2>&1 | tee ../test.log | tail -120
+      - name: Show errors
+        if: failure()
+        shell: bash
+        run: grep -E "error:" build.log | sort -u | head -200 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.variant }}
+          path: |
+            build.log
+            test.log
