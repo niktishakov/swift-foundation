@@ -378,9 +378,12 @@ private final class TestThread {
         }
     }
 
-    private static func run(_ context: UnsafeMutableRawPointer?) {
-        guard let context else { return }
+    // Returns a non-nil pointer because some Android NDK versions declare the thread start routine with a non-nullable result.
+    @discardableResult
+    private static func run(_ context: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer {
+        guard let context else { preconditionFailure("A test thread started without its context") }
         Unmanaged<Context>.fromOpaque(context).takeRetainedValue().body()
+        return context
     }
 
 #if os(Windows)
@@ -407,7 +410,6 @@ private final class TestThread {
 #endif
         let result = pthread_create(&thread, nil, { context in
             TestThread.run(context)
-            return nil
         }, context)
         precondition(result == 0, "Could not create a thread")
         self.thread = thread
