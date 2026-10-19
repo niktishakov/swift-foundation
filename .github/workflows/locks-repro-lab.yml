@@ -1,0 +1,28 @@
+name: Fork test only - corelibs locks with distantFuture
+
+on:
+  push:
+    branches: [essentials-locks-repro-lab]
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: distantFuture (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["swift:6.4.1-noble", "swiftlang/swift:nightly-main-noble"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run
+        shell: bash
+        run: |
+          swift --version
+          swiftc -O .github/lab/distant-future.swift -o repro
+          for c in condition conditionLock; do
+            timeout 30 ./repro $c; echo "exit code for $c: $?"
+          done
