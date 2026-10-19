@@ -36,6 +36,9 @@ jobs:
           git -C swift-corelibs-foundation checkout -q 5564bd1fb2a0e62be2381d600c204a8b3b0e0e8e
           git clone -q --depth 1 https://github.com/swiftlang/swift-foundation-icu
           git -C swift-foundation-icu rev-parse HEAD
+          git clone -q --depth 1 --branch 1.7.3 https://github.com/apple/swift-collections
+          git clone -q --depth 1 https://github.com/swiftlang/swift-syntax
+          git -C swift-syntax rev-parse HEAD
           if [ "${{ matrix.variant }}" = baseline ]; then
             git -C swift-foundation checkout -q b2f7c0af
           else
