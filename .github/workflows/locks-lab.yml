@@ -31,6 +31,7 @@ jobs:
         shell: bash
         run: |
           set -eux
+          cp swift-foundation/.github/lab/corelibs-remove-locks.patch "$GITHUB_WORKSPACE/corelibs-remove-locks.patch"
           git clone -q https://github.com/swiftlang/swift-corelibs-foundation
           git -C swift-corelibs-foundation checkout -q 5564bd1fb2a0e62be2381d600c204a8b3b0e0e8e
           git clone -q --depth 1 https://github.com/swiftlang/swift-foundation-icu
@@ -39,7 +40,7 @@ jobs:
             git -C swift-foundation checkout -q b2f7c0af
           else
             git -C swift-foundation checkout -q 09a2d664
-            git -C swift-corelibs-foundation apply ../swift-foundation/.github/lab/corelibs-remove-locks.patch || git -C swift-corelibs-foundation apply "$GITHUB_WORKSPACE/swift-foundation/.github/lab/corelibs-remove-locks.patch"
+            git -C swift-corelibs-foundation apply "$GITHUB_WORKSPACE/corelibs-remove-locks.patch"
           fi
           git -C swift-foundation log --oneline -1
           git -C swift-corelibs-foundation status --short
