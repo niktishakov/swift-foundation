@@ -15,5 +15,5 @@ jobs:
       enable_linux_checks: false
       enable_macos_checks: false
       enable_windows_checks: true
-      windows_swift_versions: '["nightly-main"]'
-      enable_windows_docker: false
+      windows_swift_versions: '["6.4", "nightly-6.4.x"]'
+      enable_windows_docker: true
