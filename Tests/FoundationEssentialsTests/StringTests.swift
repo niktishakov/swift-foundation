@@ -268,6 +268,297 @@ private struct StringTests {
         test("\r \r\n \r", "\r", anchored: true, backwards: true, 4..<5)
     }
 
+#if FOUNDATION_FRAMEWORK
+    // Case folding of non-ASCII characters needs the framework build.
+    @Test(arguments: [
+        ("sx", "ß", String.CompareOptions.caseInsensitive, nil),
+        ("ss", "ß", .caseInsensitive, 0..<2),
+        ("Sx", "ẞ", .caseInsensitive, nil),
+        ("xs", "ß", [.caseInsensitive, .backwards], nil),
+        ("xss", "ß", [.caseInsensitive, .backwards], 1..<3),
+        ("fx", "ﬁ", .caseInsensitive, nil),
+        ("fi", "ﬁ", .caseInsensitive, 0..<2),
+        ("fx", "ﬁ", [.literal, .caseInsensitive], nil),
+        ("FI", "ﬁ", [.literal, .caseInsensitive], 0..<2),
+        ("ß", "sx", .caseInsensitive, nil),
+        ("ß", "ss", .caseInsensitive, 0..<2),
+    ] as [(String, String, String.CompareOptions, Range<Int>?)])
+    func rangeOfStringWithExpandingCaseFold(_ tested: String, _ string: String, _ options: String.CompareOptions, _ expectation: Range<Int>?) throws {
+        let result = try tested[...]._range(of: string[...], options: options)
+        let utf8Result = result.map { tested.utf8.distance(from: tested.startIndex, to: $0.lowerBound) ..< tested.utf8.distance(from: tested.startIndex, to: $0.upperBound) }
+        #expect(utf8Result == expectation)
+    }
+#endif
+
+    @Test func testRangeOfStringWithOptions() throws {
+        func test(_ tested: String, _ string: String, _ options: String.CompareOptions, searchFrom start: Int = 0, _ expectation: Range<Int>?, sourceLocation: SourceLocation = #_sourceLocation) throws {
+            let lower = tested.utf8.index(tested.startIndex, offsetBy: start)
+            let result = try tested[lower...]._range(of: string[...], options: options)
+            let utf8Result = result.map { tested.utf8.distance(from: tested.startIndex, to: $0.lowerBound) ..< tested.utf8.distance(from: tested.startIndex, to: $0.upperBound) }
+            #expect(utf8Result == expectation, sourceLocation: sourceLocation)
+        }
+
+        // Matches must start and end on a character boundary.
+        try test("e\u{301}x", "e", [], nil)
+        try test("e\u{301}x", "e", .literal, 0..<1)
+        try test("\u{600}ab", "ab", [], nil)
+        try test("\u{600}ab", "b", [], 3..<4)
+        try test("\r\nab", "\n", [], nil)
+        try test("\r\nab", "\n", .literal, 1..<2)
+        try test("\r\nab", "\n", [], searchFrom: 1, 1..<2)
+        try test("ab\r\n", "b\r", [], nil)
+        try test("ab\r\n", "b\r", .backwards, nil)
+        try test("ab\r\n", "b\r", .literal, 1..<3)
+        try test("ab\r\n", "\r\n", [.anchored, .backwards], 2..<4)
+        try test("🇺🇸🇫🇷", "🇸🇫", .literal, 4..<12)
+        try test("🇺🇸🇫🇷", "🇸🇫", [], nil)
+
+        // Canonically equivalent characters match without `.literal`.
+        try test("x\u{212A}y", "K", [], 1..<4)
+        try test("x\u{212A}y", "K", .literal, nil)
+        try test("a\u{37E}b", "a;b", [], 0..<4)
+
+        // Non-ASCII needles that contain an ASCII character
+        try test("a#e\u{301}", "#\u{E9}", [], 1..<5)
+        try test("x#\u{301}#\u{E9}", "#\u{E9}", [], 4..<7)
+        try test("\u{600}#\u{E9}", "#\u{E9}", [], nil)
+        try test("#\u{E9}#\u{E9}", "#\u{E9}", .backwards, 3..<6)
+        try test("\u{E9}#\u{E9}", "\u{E9}#", [], 0..<3)
+        try test("\u{E9}\r\n", "\u{E9}\r", [], nil)
+        try test("中\u{37E}", "中;", [], 0..<5)
+        try test("ab中#", "b中#", .backwards, 1..<6)
+
+        // ASCII case folding
+        try test("Hello World", "WORLD", .caseInsensitive, 6..<11)
+        try test("abcABC", "abc", [.caseInsensitive, .backwards], 3..<6)
+        try test("abcABC", "ABC", [.caseInsensitive, .anchored, .backwards], 3..<6)
+        try test("abcABx", "ABC", [.caseInsensitive, .anchored, .backwards], nil)
+        try test("xabc", "ABC", [.caseInsensitive, .anchored], nil)
+        try test("ab\r\n", "B\r", .caseInsensitive, nil)
+        try test("ab\r\n", "B\r", [.caseInsensitive, .literal], 1..<3)
+        try test(String(repeating: "a", count: 1000) + "Needle", "NEEDLE", .caseInsensitive, 1000..<1006)
+        try test(String(repeating: "a", count: 1000) + "Needle", "NEEDLE", [.caseInsensitive, .anchored, .backwards], 1000..<1006)
+    }
+
+    // Expected values agree with NSString, except where NSString matches part of a character. There, a match must be whole characters, like in `testRangeOfStringWithOptions`.
+    @Test(arguments: [
+        // "\r\n" is one character.
+        ("\r\nab", "\n", [], nil, nil),
+        ("\r\nab", "\n", .literal, nil, 1..<2),
+        ("\r\nab", "\r", .backwards, nil, nil),
+        ("a\r\n", "\r", [.anchored, .backwards], nil, nil),
+        ("a\r\n", "\n", [.anchored, .backwards], nil, nil),
+        ("a\r\n", "\n", [.anchored, .backwards, .literal], nil, 2..<3),
+        ("a\n\r\n", "\n", .backwards, nil, 1..<2),
+        ("\r\r\n", "\r", .backwards, nil, 0..<1),
+        ("ab\r\n", "\n", [], 3..<4, 3..<4),
+        ("ab\r\n", "\r", [], 2..<3, 2..<3),
+        // U+212A, U+037E and U+1FEF are canonically equivalent to ASCII characters.
+        ("x\u{212A}y", "K", .backwards, nil, 1..<4),
+        ("x\u{212A}", "K", [.anchored, .backwards], nil, 1..<4),
+        ("a\u{37E}b", ";", [], nil, 1..<3),
+        ("a\u{37E}b", ";", .literal, nil, nil),
+        ("a;b", "\u{37E}", [], nil, 1..<2),
+        ("\u{1FEF}`", "`", [], nil, 0..<3),
+        ("\u{1FEF}`", "\u{1FEF}", .backwards, nil, 3..<4),
+        // Combining marks before and after a match
+        ("e\u{301}x", "e", [], nil, nil),
+        ("e\u{301}x", "x", [], nil, 3..<4),
+        ("\u{301}ex", "e", [], nil, 2..<3),
+        ("\u{301}ex", "\u{301}", [], nil, 0..<2),
+        ("x\u{E9}", "e\u{301}", [], nil, 1..<3),
+        ("xe\u{301}", "\u{E9}", .backwards, nil, 1..<4),
+        ("xe\u{301}", "\u{E9}", .literal, nil, nil),
+        ("e\u{301}\u{327}", "e\u{327}\u{301}", [], nil, 0..<5),
+        ("ae\u{301}", "e", [.anchored, .backwards], nil, nil),
+        // Parts of grapheme clusters
+        ("🇺🇸🇫🇷", "🇸🇫", .literal, nil, 4..<12),
+        ("🇺🇸🇫🇷", "🇫🇷", .backwards, nil, 8..<16),
+        ("👨‍👩‍👧x", "👩", [], nil, nil),
+        ("👨‍👩‍👧x", "👩", .literal, nil, 7..<11),
+        ("👨‍👩‍👧x", "👨", [], nil, nil),
+        ("👨‍👩‍👧👨", "👨", .backwards, nil, 18..<22),
+        ("👍🏽👍", "👍", [], nil, 8..<12),
+        ("\u{600}ab", "ab", [], nil, nil),
+        ("a\u{600}b", "a", .backwards, nil, 0..<1),
+        ("가", "\u{1100}\u{1161}", [], nil, 0..<3),
+        ("\u{1100}\u{1161}x", "가", [], nil, 0..<6),
+        ("中文中", "中", [.anchored, .backwards], nil, 6..<9),
+        // Search ranges that start inside a character, and empty ones
+        ("e\u{301}x", "\u{301}", [], 1..<4, 1..<3),
+        ("e\u{301}x", "\u{301}x", .anchored, 1..<4, 1..<4),
+        ("abc", "c", [], 1..<1, nil),
+        ("abc", "abcd", [], nil, nil),
+        ("", "a", [], nil, nil),
+        ("a", "", [], nil, nil),
+    ] as [(String, String, String.CompareOptions, Range<Int>?, Range<Int>?)])
+    func rangeOfStringEdgeCases(_ tested: String, _ string: String, _ options: String.CompareOptions, _ searchRange: Range<Int>?, _ expectation: Range<Int>?) throws {
+        let utf8SearchRange = searchRange ?? 0 ..< tested.utf8.count
+        let lower = tested.utf8.index(tested.startIndex, offsetBy: utf8SearchRange.lowerBound)
+        let upper = tested.utf8.index(tested.startIndex, offsetBy: utf8SearchRange.upperBound)
+        let result = try tested[lower ..< upper]._range(of: string[...], options: options)
+        let utf8Result = result.map { tested.utf8.distance(from: tested.startIndex, to: $0.lowerBound) ..< tested.utf8.distance(from: tested.startIndex, to: $0.upperBound) }
+        #expect(utf8Result == expectation)
+    }
+
+#if FOUNDATION_FRAMEWORK
+    // Case folding of non-ASCII characters needs the framework build. Expected values agree with NSString.
+    @Test(arguments: [
+        ("a\u{FB00}", "FF", [.caseInsensitive, .anchored, .backwards], 1..<4),
+        ("a\u{FB00}", "ff", [.caseInsensitive, .backwards], 1..<4),
+        ("\u{FB00}a", "FF", [.caseInsensitive, .anchored], 0..<3),
+        ("aff", "\u{FB00}", [.caseInsensitive, .anchored, .backwards], 1..<3),
+        ("a\u{FB00}", "F", [.caseInsensitive, .anchored, .backwards], nil),
+        ("Straße", "STRASSE", .caseInsensitive, 0..<7),
+        ("STRASSE", "straße", .caseInsensitive, 0..<7),
+        ("x\u{1E9E}", "ß", .caseInsensitive, 1..<4),
+        ("x\u{1E9E}", "SS", [.caseInsensitive, .anchored, .backwards], 1..<4),
+        ("\u{FB01}x", "FI", [.caseInsensitive, .anchored], 0..<3),
+        ("\u{FB01}x", "fix", .caseInsensitive, 0..<4),
+        ("x\u{212A}y", "k", .caseInsensitive, 1..<4),
+        ("x\u{212A}y", "k", [.caseInsensitive, .literal], 1..<4),
+        ("xky", "\u{212A}", .caseInsensitive, 1..<2),
+        ("ΣΑΣ", "σας", .caseInsensitive, 0..<6),
+    ] as [(String, String, String.CompareOptions, Range<Int>?)])
+    func rangeOfStringCaseFoldingEdgeCases(_ tested: String, _ string: String, _ options: String.CompareOptions, _ expectation: Range<Int>?) throws {
+        let result = try tested[...]._range(of: string[...], options: options)
+        let utf8Result = result.map { tested.utf8.distance(from: tested.startIndex, to: $0.lowerBound) ..< tested.utf8.distance(from: tested.startIndex, to: $0.upperBound) }
+        #expect(utf8Result == expectation)
+    }
+#endif
+
+    /// A plain search to check `_range(of:options:)` against. It compares whole characters, or scalars with `.literal`, at every start in search order. With `.caseInsensitive`, it supports only ASCII text.
+    private static func referenceRange(of needle: Substring, in haystack: Substring, options: String.CompareOptions) -> Range<String.Index>? {
+        guard !haystack.isEmpty, !needle.isEmpty else {
+            return nil
+        }
+        let caseInsensitive = options.contains(.caseInsensitive)
+        if options.contains(.literal) {
+            return referenceRange(of: Array(needle.unicodeScalars), in: Array(haystack.unicodeScalars), indices: Array(haystack.unicodeScalars.indices) + [haystack.endIndex], options: options) {
+                caseInsensitive ? String($0).lowercased() == String($1).lowercased() : $0 == $1
+            }
+        }
+        return referenceRange(of: Array(needle), in: Array(haystack), indices: Array(haystack.indices) + [haystack.endIndex], options: options) {
+            caseInsensitive ? $0.lowercased() == $1.lowercased() : $0 == $1
+        }
+    }
+
+    private static func referenceRange<Element>(of needle: [Element], in haystack: [Element], indices: [String.Index], options: String.CompareOptions, isEqual: (Element, Element) -> Bool) -> Range<String.Index>? {
+        guard needle.count <= haystack.count else {
+            return nil
+        }
+        var starts = Array(0 ... haystack.count - needle.count)
+        if options.contains(.backwards) {
+            starts.reverse()
+        }
+        if options.contains(.anchored) {
+            starts = [starts[0]]
+        }
+        for start in starts where needle.indices.allSatisfy({ isEqual(haystack[start + $0], needle[$0]) }) {
+            return indices[start] ..< indices[start + needle.count]
+        }
+        return nil
+    }
+
+    private struct SplitMix64: RandomNumberGenerator {
+        var state: UInt64
+
+        mutating func next() -> UInt64 {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z &>> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z &>> 27)) &* 0x94D049BB133111EB
+            return z ^ (z &>> 31)
+        }
+    }
+
+    @Test(arguments: [UInt64(1), 2, 3])
+    func rangeOfStringMatchesReferenceSearch(seed: UInt64) throws {
+        let asciiPieces = ["a", "b", "A", "B", "k", "K", ";", "`", " ", "#", "\r", "\n", "\r\n"]
+        let otherPieces = ["e", "\u{301}", "\u{327}", "\u{E9}", "\u{212A}", "\u{37E}", "\u{1FEF}", "\u{600}", "\u{200D}", "\u{FE0F}", "👩", "👨‍👩‍👧", "👍🏽", "🇺", "🇸", "中", "가", "\u{1100}", "\u{1161}"]
+        let optionChoices: [String.CompareOptions] = [.literal, .backwards, .anchored]
+        var generator = SplitMix64(state: seed)
+        for _ in 0 ..< 2000 {
+            let isASCII = generator.next() % 3 == 0
+            let pieces = isASCII ? asciiPieces : asciiPieces + otherPieces
+            var haystack = ""
+            for _ in 0 ..< generator.next() % 16 {
+                haystack += pieces[Int(generator.next() % UInt64(pieces.count))]
+            }
+            let scalarIndices = Array(haystack.unicodeScalars.indices) + [haystack.endIndex]
+            var needle = ""
+            if generator.next() % 3 != 0 && scalarIndices.count > 1 {
+                let start = Int(generator.next() % UInt64(scalarIndices.count - 1))
+                let end = Swift.min(scalarIndices.count - 1, start + 1 + Int(generator.next() % 4))
+                needle = String(haystack[scalarIndices[start] ..< scalarIndices[end]])
+                if generator.next() % 4 == 0 {
+                    needle = needle.uppercased()
+                }
+            } else {
+                for _ in 0 ... generator.next() % 3 {
+                    needle += pieces[Int(generator.next() % UInt64(pieces.count))]
+                }
+            }
+            var options: String.CompareOptions = []
+            for option in optionChoices where generator.next() % 3 == 0 {
+                options.insert(option)
+            }
+            // The reference search folds only ASCII case. Case folding with `.literal` needs the framework build.
+            if isASCII && needle.utf8.allSatisfy({ $0 < 0x80 }) && !options.contains(.literal) && generator.next() % 2 == 0 {
+                options.insert(.caseInsensitive)
+            }
+            var lower = haystack.startIndex
+            var upper = haystack.endIndex
+            if generator.next() % 2 == 0 {
+                let first = Int(generator.next() % UInt64(scalarIndices.count))
+                let second = Int(generator.next() % UInt64(scalarIndices.count))
+                lower = scalarIndices[Swift.min(first, second)]
+                upper = scalarIndices[Swift.max(first, second)]
+            }
+            let result = try haystack[lower ..< upper]._range(of: needle[...], options: options)
+            let expectation = Self.referenceRange(of: needle[...], in: haystack[lower ..< upper], options: options)
+            #expect(result == expectation, "\(haystack.debugDescription) \(needle.debugDescription) \(options) \(haystack.utf8.distance(from: haystack.startIndex, to: lower)) ..< \(haystack.utf8.distance(from: haystack.startIndex, to: upper))")
+        }
+    }
+
+    // MARK: - Unicode facts that the UTF-8 search in `_range(of:options:)` relies on
+
+    @Test func onlyThreeScalarsAreCanonicallyEquivalentToASCIICharacters() {
+        let asciiCharacters = Set((0 ..< 0x80).map { Character(Unicode.Scalar(UInt8($0))) })
+        var equivalents: [UInt32] = []
+        for value in UInt32(0x80) ... 0x10FFFF {
+            if let scalar = Unicode.Scalar(value), asciiCharacters.contains(Character(scalar)) {
+                equivalents.append(value)
+            }
+        }
+        #expect(equivalents == [0x37E, 0x1FEF, 0x212A])
+    }
+
+    @Test func onlyCRLFJoinsTwoASCIIScalarsIntoOneCharacter() {
+        var joined: [String] = []
+        for first in UInt8(0) ..< 0x80 {
+            for second in UInt8(0) ..< 0x80 {
+                let pair = String(Unicode.Scalar(first)) + String(Unicode.Scalar(second))
+                if pair.count == 1 {
+                    joined.append(pair)
+                }
+            }
+        }
+        #expect(joined == ["\r\n"])
+    }
+
+#if FOUNDATION_FRAMEWORK
+    // Case folding, diacritic stripping and width mapping need the framework build.
+    @Test func optionsChangeASCIIScalarsOnlyByCase() {
+        for value in UInt8(0) ..< 0x80 {
+            let scalar = Unicode.Scalar(value)
+            #expect(scalar._toHalfWidth() == scalar)
+            #expect(scalar._stripDiacritics() == scalar)
+            #expect(scalar._caseFoldMapping == String(scalar).lowercased())
+        }
+    }
+#endif
+
     @Test func testTryFromUTF16() {
         func test(_ utf16Buffer: [UInt16], expected: String?, sourceLocation: SourceLocation = #_sourceLocation) {
             let result = utf16Buffer.withUnsafeBufferPointer {
