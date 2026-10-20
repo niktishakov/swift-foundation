@@ -839,7 +839,7 @@ extension Substring {
     /// Searches the UTF-8 code units for the common cases, without breaking the strings into characters.
     func _utf8Range(of strToFind: Substring, literal: Bool, toHalfWidth: Bool, diacriticsInsensitive: Bool, caseFold: Bool, anchored: Bool, backwards: Bool) -> UTF8SearchResult {
         let hasTransforms = toHalfWidth || diacriticsInsensitive || caseFold
-        guard isContiguousUTF8, strToFind.isContiguousUTF8, (literal && !hasTransforms) || (strToFind.utf8.first ?? 0) < 0x80 else {
+        guard isContiguousUTF8, strToFind.isContiguousUTF8, !hasTransforms || (strToFind.utf8.first ?? 0) < 0x80 else {
             return .needsFullSearch(from: startIndex)
         }
         if anchored, let firstDifference = Self._anchoredBoundaryBytes(self, strToFind, backwards: backwards) {
@@ -870,7 +870,10 @@ extension Substring {
         if literal && !hasTransforms {
             mode = .codeUnits
         } else if !needleIsASCII {
-            return .needsFullSearch(from: startIndex)
+            guard !hasTransforms, !anchored, let anchor = Self._asciiAnchor(in: strToFind) else {
+                return .needsFullSearch(from: startIndex)
+            }
+            return _range(of: strToFind, anchor: anchor, backwards: backwards)
         } else if !literal && !hasTransforms && !needleHasASCIIWithEquivalent {
             mode = .asciiCharacters
         } else {
@@ -934,6 +937,44 @@ extension Substring {
             candidate += step
         }
 
+        return .notFound
+    }
+
+    /// A character of the needle that is a single ASCII code unit, and its offset in characters. Only that code unit is canonically equivalent to such a character, so every match has it at the same character offset.
+    private static func _asciiAnchor(in needle: Substring) -> (characterOffset: Int, codeUnit: UInt8)? {
+        var anchor: (characterOffset: Int, codeUnit: UInt8)?
+        var anchorIsCommon = true
+        for (characterOffset, character) in needle.enumerated() {
+            guard character.utf8.count == 1, let codeUnit = character.utf8.first else {
+                continue
+            }
+            // U+037E, U+1FEF and U+212A are canonically equivalent to these ASCII characters.
+            if codeUnit == UInt8(ascii: ";") || codeUnit == UInt8(ascii: "`") || codeUnit == UInt8(ascii: "K") {
+                continue
+            }
+            // Lowercase letters and spaces are common in text. Other characters give fewer false candidates.
+            let isCommon = codeUnit == UInt8(ascii: " ") || (codeUnit >= UInt8(ascii: "a") && codeUnit <= UInt8(ascii: "z"))
+            if anchor == nil || (anchorIsCommon && !isCommon) {
+                anchor = (characterOffset, codeUnit)
+                anchorIsCommon = isCommon
+            }
+        }
+        return anchor
+    }
+
+    /// Finds the anchor code unit on a character boundary, and compares the characters only at the match start it gives.
+    private func _range(of strToFind: Substring, anchor: (characterOffset: Int, codeUnit: UInt8), backwards: Bool) -> UTF8SearchResult {
+        let haystack = utf8Span.span
+        let step = backwards ? -1 : 1
+        var offset = backwards ? haystack.count - 1 : 0
+        while offset >= 0 && offset < haystack.count {
+            if haystack[offset] == anchor.codeUnit && _isCharacterBoundary(haystack, offset),
+               let start = index(_utf8Index(offset), offsetBy: -anchor.characterOffset, limitedBy: startIndex),
+               let range = self[start...]._range(of: strToFind, anchored: true, backwards: false) {
+                return .found(range)
+            }
+            offset += step
+        }
         return .notFound
     }
 

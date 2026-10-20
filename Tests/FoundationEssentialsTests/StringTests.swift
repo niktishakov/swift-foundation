@@ -318,6 +318,16 @@ private struct StringTests {
         try test("x\u{212A}y", "K", .literal, nil)
         try test("a\u{37E}b", "a;b", [], 0..<4)
 
+        // Non-ASCII needles that contain an ASCII character
+        try test("a#e\u{301}", "#\u{E9}", [], 1..<5)
+        try test("x#\u{301}#\u{E9}", "#\u{E9}", [], 4..<7)
+        try test("\u{600}#\u{E9}", "#\u{E9}", [], nil)
+        try test("#\u{E9}#\u{E9}", "#\u{E9}", .backwards, 3..<6)
+        try test("\u{E9}#\u{E9}", "\u{E9}#", [], 0..<3)
+        try test("\u{E9}\r\n", "\u{E9}\r", [], nil)
+        try test("中\u{37E}", "中;", [], 0..<5)
+        try test("ab中#", "b中#", .backwards, 1..<6)
+
         // ASCII case folding
         try test("Hello World", "WORLD", .caseInsensitive, 6..<11)
         try test("abcABC", "abc", [.caseInsensitive, .backwards], 3..<6)
