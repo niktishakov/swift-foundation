@@ -290,6 +290,46 @@ private struct StringTests {
     }
 #endif
 
+    @Test func testRangeOfStringWithOptions() throws {
+        func test(_ tested: String, _ string: String, _ options: String.CompareOptions, searchFrom start: Int = 0, _ expectation: Range<Int>?, sourceLocation: SourceLocation = #_sourceLocation) throws {
+            let lower = tested.utf8.index(tested.startIndex, offsetBy: start)
+            let result = try tested[lower...]._range(of: string[...], options: options)
+            let utf8Result = result.map { tested.utf8.distance(from: tested.startIndex, to: $0.lowerBound) ..< tested.utf8.distance(from: tested.startIndex, to: $0.upperBound) }
+            #expect(utf8Result == expectation, sourceLocation: sourceLocation)
+        }
+
+        // Matches must start and end on a character boundary.
+        try test("e\u{301}x", "e", [], nil)
+        try test("e\u{301}x", "e", .literal, 0..<1)
+        try test("\u{600}ab", "ab", [], nil)
+        try test("\u{600}ab", "b", [], 3..<4)
+        try test("\r\nab", "\n", [], nil)
+        try test("\r\nab", "\n", .literal, 1..<2)
+        try test("\r\nab", "\n", [], searchFrom: 1, 1..<2)
+        try test("ab\r\n", "b\r", [], nil)
+        try test("ab\r\n", "b\r", .backwards, nil)
+        try test("ab\r\n", "b\r", .literal, 1..<3)
+        try test("ab\r\n", "\r\n", [.anchored, .backwards], 2..<4)
+        try test("🇺🇸🇫🇷", "🇸🇫", .literal, 4..<12)
+        try test("🇺🇸🇫🇷", "🇸🇫", [], nil)
+
+        // Canonically equivalent characters match without `.literal`.
+        try test("x\u{212A}y", "K", [], 1..<4)
+        try test("x\u{212A}y", "K", .literal, nil)
+        try test("a\u{37E}b", "a;b", [], 0..<4)
+
+        // ASCII case folding
+        try test("Hello World", "WORLD", .caseInsensitive, 6..<11)
+        try test("abcABC", "abc", [.caseInsensitive, .backwards], 3..<6)
+        try test("abcABC", "ABC", [.caseInsensitive, .anchored, .backwards], 3..<6)
+        try test("abcABx", "ABC", [.caseInsensitive, .anchored, .backwards], nil)
+        try test("xabc", "ABC", [.caseInsensitive, .anchored], nil)
+        try test("ab\r\n", "B\r", .caseInsensitive, nil)
+        try test("ab\r\n", "B\r", [.caseInsensitive, .literal], 1..<3)
+        try test(String(repeating: "a", count: 1000) + "Needle", "NEEDLE", .caseInsensitive, 1000..<1006)
+        try test(String(repeating: "a", count: 1000) + "Needle", "NEEDLE", [.caseInsensitive, .anchored, .backwards], 1000..<1006)
+    }
+
     @Test func testTryFromUTF16() {
         func test(_ utf16Buffer: [UInt16], expected: String?, sourceLocation: SourceLocation = #_sourceLocation) {
             let result = utf16Buffer.withUnsafeBufferPointer {

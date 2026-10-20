@@ -514,6 +514,23 @@ let benchmarks: @Sendable () -> Void = {
         longString.range(of: "cccc")
     }
 
+    let searchBody = String(repeating: "abcdefghij", count: 100_000)
+    let needleAtEnd = AttributedString(searchBody + "Needle")
+    let needleAtStart = AttributedString("Needle" + searchBody)
+    let searchCases: [(name: String, options: String.CompareOptions, string: AttributedString)] = [
+        ("default", [], needleAtEnd),
+        ("literal", [.literal], needleAtEnd),
+        ("caseInsensitive", [.caseInsensitive], needleAtEnd),
+        ("backwards", [.backwards], needleAtStart),
+    ]
+    for searchCase in searchCases {
+        Benchmark("range(of:)-1MB-\(searchCase.name)") { benchmark in
+            for _ in benchmark.scaledIterations {
+                blackHole(searchCase.string.range(of: searchCase.options.contains(.caseInsensitive) ? "NEEDLE" : "Needle", options: searchCase.options))
+            }
+        }
+    }
+
     Benchmark("runs") {benchmark in
         for _ in benchmark.scaledIterations {
             blackHole(manyAttributesString.runs)

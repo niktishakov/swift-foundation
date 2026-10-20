@@ -662,14 +662,22 @@ extension Substring {
         let anchored = options.contains(.anchored)
         let backwards = options.contains(.backwards)
 
-        let result: Range<Index>?
-        if options.contains(.literal) {
-            result = unicodeScalars._range(of: strToFind.unicodeScalars, toHalfWidth: toHalfWidth, diacriticsInsensitive: diacriticsInsensitive, caseFold: caseFold, anchored: anchored, backwards: backwards)
-        } else {
-            result = _range(of: strToFind, toHalfWidth: toHalfWidth, diacriticsInsensitive: diacriticsInsensitive, caseFold: caseFold, anchored: anchored, backwards: backwards)
+        let literal = options.contains(.literal)
+        var haystack = self
+        switch _utf8Range(of: strToFind, literal: literal, toHalfWidth: toHalfWidth, diacriticsInsensitive: diacriticsInsensitive, caseFold: caseFold, anchored: anchored, backwards: backwards) {
+        case .found(let range):
+            return range
+        case .notFound:
+            return nil
+        case .needsFullSearch(let start):
+            haystack = self[start...]
         }
 
-        return result
+        if literal {
+            return haystack.unicodeScalars._range(of: strToFind.unicodeScalars, toHalfWidth: toHalfWidth, diacriticsInsensitive: diacriticsInsensitive, caseFold: caseFold, anchored: anchored, backwards: backwards)
+        } else {
+            return haystack._range(of: strToFind, toHalfWidth: toHalfWidth, diacriticsInsensitive: diacriticsInsensitive, caseFold: caseFold, anchored: anchored, backwards: backwards)
+        }
     }
 
     func _components(separatedBy separator: Substring, options: String.CompareOptions = []) throws -> [String] {
@@ -799,4 +807,166 @@ internal func _allASCII(_ input: UnsafeBufferPointer<UInt8>) -> Bool {
         i &+= 1
     }
     return true
+}
+
+// MARK: - UTF-8 search
+
+extension Substring {
+    enum UTF8SearchResult {
+        case found(Range<Index>)
+        case notFound
+        /// The UTF-8 search cannot decide. Search the characters from the given index to the end. No match starts before it.
+        case needsFullSearch(from: Index)
+    }
+
+    private enum UTF8SearchMode {
+        /// Matches are equal code unit sequences. Used for `.literal` without other options, as equal scalar sequences have equal UTF-8.
+        case codeUnits
+        /// The needle is ASCII. Matches are equal code unit sequences that start and end on a character boundary.
+        case asciiCharacters
+        /// The needle is ASCII. Only the ASCII parts of the haystack are searched. The search stops at the first non-ASCII code unit that could change the result.
+        case asciiOnly
+    }
+
+    private enum UTF8MatchResult {
+        case match
+        case noMatch
+        case nonASCII
+    }
+
+    /// Searches the UTF-8 code units for the common cases, without breaking the strings into characters.
+    func _utf8Range(of strToFind: Substring, literal: Bool, toHalfWidth: Bool, diacriticsInsensitive: Bool, caseFold: Bool, anchored: Bool, backwards: Bool) -> UTF8SearchResult {
+        guard isContiguousUTF8, strToFind.isContiguousUTF8 else {
+            return .needsFullSearch(from: startIndex)
+        }
+        let haystack = utf8Span.span
+        let needle = strToFind.utf8Span.span
+        let hasTransforms = toHalfWidth || diacriticsInsensitive || caseFold
+
+        var needleIsASCII = true
+        // These ASCII characters are canonically equivalent to U+037E, U+1FEF and U+212A.
+        var needleHasASCIIWithEquivalent = false
+        for i in needle.indices {
+            let byte = needle[i]
+            if byte >= 0x80 {
+                needleIsASCII = false
+                break
+            }
+            if byte == UInt8(ascii: ";") || byte == UInt8(ascii: "`") || byte == UInt8(ascii: "K") {
+                needleHasASCIIWithEquivalent = true
+            }
+        }
+
+        let mode: UTF8SearchMode
+        if literal && !hasTransforms {
+            mode = .codeUnits
+        } else if !needleIsASCII {
+            return .needsFullSearch(from: startIndex)
+        } else if !literal && !hasTransforms && !needleHasASCIIWithEquivalent {
+            mode = .asciiCharacters
+        } else {
+            mode = .asciiOnly
+        }
+
+        let needleCount = needle.count
+        let haystackCount = haystack.count
+        guard needleCount <= haystackCount else {
+            // For `.asciiOnly` with transforms, a shorter haystack can still match: "ß" matches "ss" when ignoring case.
+            return mode == .asciiOnly && hasTransforms ? .needsFullSearch(from: startIndex) : .notFound
+        }
+
+        let lastStart = haystackCount - needleCount
+        if mode == .asciiOnly && backwards && anchored {
+            // A match that ends at the end of the haystack can start before `lastStart` only if it contains non-ASCII characters.
+            for i in lastStart ..< haystackCount where haystack[i] >= 0x80 {
+                return .needsFullSearch(from: startIndex)
+            }
+        }
+        var candidate = backwards ? lastStart : 0
+        let stop = anchored ? candidate : (backwards ? 0 : lastStart)
+        let step = backwards ? -1 : 1
+        let firstByte = caseFold ? needle[0]._lowercased : needle[0]
+        let checkLineBreaks = !literal
+
+        while true {
+            let byte = haystack[candidate]
+            if mode == .asciiOnly && byte >= 0x80 {
+                return _needsFullSearch(at: candidate, backwards: backwards, anchored: anchored)
+            }
+            if (caseFold ? byte._lowercased : byte) == firstByte {
+                switch Self._utf8Match(haystack, at: candidate, needle: needle, caseFold: caseFold, asciiOnly: mode == .asciiOnly) {
+                case .nonASCII:
+                    return _needsFullSearch(at: candidate, backwards: backwards, anchored: anchored)
+                case .noMatch:
+                    break
+                case .match:
+                    let end = candidate + needleCount
+                    switch mode {
+                    case .codeUnits:
+                        return .found(_utf8Index(candidate) ..< _utf8Index(end))
+                    case .asciiCharacters:
+                        if _isCharacterBoundary(haystack, candidate) && _isCharacterBoundary(haystack, end) {
+                            return .found(_utf8Index(candidate) ..< _utf8Index(end))
+                        }
+                    case .asciiOnly:
+                        // A non-ASCII neighbor can join the match into a larger character, or be ignored as a diacritic.
+                        if (candidate > 0 && haystack[candidate - 1] >= 0x80) || (end < haystackCount && haystack[end] >= 0x80) {
+                            return _needsFullSearch(at: candidate, backwards: backwards, anchored: anchored)
+                        }
+                        if !checkLineBreaks || (!Self._splitsLineBreak(haystack, candidate) && !Self._splitsLineBreak(haystack, end)) {
+                            return .found(_utf8Index(candidate) ..< _utf8Index(end))
+                        }
+                    }
+                }
+            }
+            if candidate == stop {
+                break
+            }
+            candidate += step
+        }
+
+        return .notFound
+    }
+
+    private func _needsFullSearch(at offset: Int, backwards: Bool, anchored: Bool) -> UTF8SearchResult {
+        // Searching forward, every earlier start was checked on ASCII code units and did not match.
+        guard !backwards && !anchored else {
+            return .needsFullSearch(from: startIndex)
+        }
+        return .needsFullSearch(from: _index(roundingDown: _utf8Index(offset)))
+    }
+
+    private func _utf8Index(_ offset: Int) -> Index {
+        utf8.index(startIndex, offsetBy: offset)
+    }
+
+    private static func _splitsLineBreak(_ haystack: Span<UInt8>, _ offset: Int) -> Bool {
+        offset > 0 && offset < haystack.count && haystack[offset - 1] == UInt8(ascii: "\r") && haystack[offset] == UInt8(ascii: "\n")
+    }
+
+    private func _isCharacterBoundary(_ haystack: Span<UInt8>, _ offset: Int) -> Bool {
+        guard offset > 0 && offset < haystack.count else {
+            return true
+        }
+        if haystack[offset - 1] < 0x80 && haystack[offset] < 0x80 {
+            return !Self._splitsLineBreak(haystack, offset)
+        }
+        let index = _utf8Index(offset)
+        return _index(roundingDown: index) == index
+    }
+
+    private static func _utf8Match(_ haystack: Span<UInt8>, at offset: Int, needle: Span<UInt8>, caseFold: Bool, asciiOnly: Bool) -> UTF8MatchResult {
+        for i in needle.indices {
+            let byte = haystack[offset + i]
+            if asciiOnly && byte >= 0x80 {
+                return .nonASCII
+            }
+            let needleByte = needle[i]
+            if byte == needleByte || (caseFold && byte._lowercased == needleByte._lowercased) {
+                continue
+            }
+            return .noMatch
+        }
+        return .match
+    }
 }
