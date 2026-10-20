@@ -521,6 +521,44 @@ private struct StringTests {
         }
     }
 
+    // MARK: - Unicode facts that the UTF-8 search in `_range(of:options:)` relies on
+
+    @Test func onlyThreeScalarsAreCanonicallyEquivalentToASCIICharacters() {
+        let asciiCharacters = Set((0 ..< 0x80).map { Character(Unicode.Scalar(UInt8($0))) })
+        var equivalents: [UInt32] = []
+        for value in UInt32(0x80) ... 0x10FFFF {
+            if let scalar = Unicode.Scalar(value), asciiCharacters.contains(Character(scalar)) {
+                equivalents.append(value)
+            }
+        }
+        #expect(equivalents == [0x37E, 0x1FEF, 0x212A])
+    }
+
+    @Test func onlyCRLFJoinsTwoASCIIScalarsIntoOneCharacter() {
+        var joined: [String] = []
+        for first in UInt8(0) ..< 0x80 {
+            for second in UInt8(0) ..< 0x80 {
+                let pair = String(Unicode.Scalar(first)) + String(Unicode.Scalar(second))
+                if pair.count == 1 {
+                    joined.append(pair)
+                }
+            }
+        }
+        #expect(joined == ["\r\n"])
+    }
+
+#if FOUNDATION_FRAMEWORK
+    // Case folding, diacritic stripping and width mapping need the framework build.
+    @Test func optionsChangeASCIIScalarsOnlyByCase() {
+        for value in UInt8(0) ..< 0x80 {
+            let scalar = Unicode.Scalar(value)
+            #expect(scalar._toHalfWidth() == scalar)
+            #expect(scalar._stripDiacritics() == scalar)
+            #expect(scalar._caseFoldMapping == String(scalar).lowercased())
+        }
+    }
+#endif
+
     @Test func testTryFromUTF16() {
         func test(_ utf16Buffer: [UInt16], expected: String?, sourceLocation: SourceLocation = #_sourceLocation) {
             let result = utf16Buffer.withUnsafeBufferPointer {
