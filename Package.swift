@@ -183,7 +183,7 @@ let package = Package(
         // FoundationInternationalization
         .target(
             name: "_FoundationInternationalizationData",
-            exclude: ["CMakeLists.txt"],
+            exclude: ["CMakeLists.txt", "PluralRulesData.json"],
             swiftSettings: [
                 .enableExperimentalFeature("AccessLevelOnImport"),
                 .enableExperimentalFeature("Lifetimes"),
