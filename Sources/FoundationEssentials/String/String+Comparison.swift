@@ -670,7 +670,9 @@ extension Substring {
         case .notFound:
             return nil
         case .needsFullSearch(let start):
-            haystack = self[start...]
+            if start != startIndex {
+                haystack = self[start...]
+            }
         }
 
         if literal {
@@ -836,12 +838,19 @@ extension Substring {
 
     /// Searches the UTF-8 code units for the common cases, without breaking the strings into characters.
     func _utf8Range(of strToFind: Substring, literal: Bool, toHalfWidth: Bool, diacriticsInsensitive: Bool, caseFold: Bool, anchored: Bool, backwards: Bool) -> UTF8SearchResult {
-        guard isContiguousUTF8, strToFind.isContiguousUTF8 else {
+        let hasTransforms = toHalfWidth || diacriticsInsensitive || caseFold
+        guard isContiguousUTF8, strToFind.isContiguousUTF8, (literal && !hasTransforms) || (strToFind.utf8.first ?? 0) < 0x80 else {
             return .needsFullSearch(from: startIndex)
+        }
+        if anchored, let firstDifference = Self._anchoredBoundaryBytes(self, strToFind, backwards: backwards) {
+            // The first (or last) characters differ when the code units at that end differ and are ASCII: no option makes them equal.
+            let (haystackByte, needleByte) = firstDifference
+            if (literal && !hasTransforms) || (haystackByte < 0x80 && needleByte < 0x80 && (caseFold ? haystackByte._lowercased != needleByte._lowercased : haystackByte != needleByte)) {
+                return .notFound
+            }
         }
         let haystack = utf8Span.span
         let needle = strToFind.utf8Span.span
-        let hasTransforms = toHalfWidth || diacriticsInsensitive || caseFold
 
         var needleIsASCII = true
         // These ASCII characters are canonically equivalent to U+037E, U+1FEF and U+212A.
@@ -928,9 +937,16 @@ extension Substring {
         return .notFound
     }
 
+    private static func _anchoredBoundaryBytes(_ haystack: Substring, _ needle: Substring, backwards: Bool) -> (UInt8, UInt8)? {
+        guard let haystackByte = backwards ? haystack.utf8.last : haystack.utf8.first, let needleByte = backwards ? needle.utf8.last : needle.utf8.first, haystackByte != needleByte else {
+            return nil
+        }
+        return (haystackByte, needleByte)
+    }
+
     private func _needsFullSearch(at offset: Int, backwards: Bool, anchored: Bool) -> UTF8SearchResult {
         // Searching forward, every earlier start was checked on ASCII code units and did not match.
-        guard !backwards && !anchored else {
+        guard !backwards && !anchored && offset > 0 else {
             return .needsFullSearch(from: startIndex)
         }
         return .needsFullSearch(from: _index(roundingDown: _utf8Index(offset)))
