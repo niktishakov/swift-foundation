@@ -26,6 +26,7 @@ target_sources(FoundationInternationalization PRIVATE
     Date/ICUDateFormatter.swift
     Date/ICUDateIntervalFormatter.swift
     Date/ICURelativeDateFormatter.swift
+    Date/RelativeDateFormatter.swift
     
     Number/BinaryFloatingPoint+FormatStyle.swift
     Number/BinaryInteger+FormatStyle.swift

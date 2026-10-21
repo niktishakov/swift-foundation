@@ -27,6 +27,9 @@ endif()
 project(SwiftFoundation
     LANGUAGES C Swift)
 
+# Fork test only: build the Swift relative date formatter.
+add_compile_options("$<$<COMPILE_LANGUAGE:Swift>:-DFOUNDATION_RELATIVE_DATE_FORMAT_SWIFT>")
+
 if(NOT SWIFT_SYSTEM_NAME)
   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(SWIFT_SYSTEM_NAME macosx)
