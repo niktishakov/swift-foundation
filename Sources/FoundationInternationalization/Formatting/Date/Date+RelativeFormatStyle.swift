@@ -334,7 +334,14 @@ extension Date {
              guard let (component, value) = _largestNonZeroComponent(destDate, reference: refDate, adjustComponent: componentAdjustmentStrategy) else {
                  return ""
              }
-             
+
+#if FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT
+             // The Swift formatter returns nil for what it leaves to the ICU formatter, such as `spellOut`.
+             if let formatter = RelativeDateFormatter.formatter(for: self),
+                let result = formatter.format(value: value, component: component, presentation: self.presentation) {
+                 return result
+             }
+#endif
              return ICURelativeDateFormatter.formatter(for: self).format(value: value, component: component, presentation: self.presentation)!
          }
 

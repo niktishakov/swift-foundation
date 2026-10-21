@@ -393,6 +393,123 @@ private struct DateRelativeFormatStyleTests {
     }
 }
 
+// MARK: Locales
+
+/// One formatted value: the anchored style formats `value` of `field`, since its only allowed field is `field`.
+struct RelativeFormatCase: Sendable, CustomTestStringConvertible {
+    let locale: String
+    let field: Date.RelativeFormatStyle.Field
+    let value: Int
+    let unitsStyle: Date.RelativeFormatStyle.UnitsStyle
+    let presentation: Date.RelativeFormatStyle.Presentation
+    let capitalizationContext: FormatStyleCapitalizationContext
+    let expected: String
+
+    init(_ locale: String, _ field: Date.RelativeFormatStyle.Field, _ value: Int, _ expected: String, unitsStyle: Date.RelativeFormatStyle.UnitsStyle = .wide, presentation: Date.RelativeFormatStyle.Presentation = .numeric, context capitalizationContext: FormatStyleCapitalizationContext = .unknown) {
+        self.locale = locale
+        self.field = field
+        self.value = value
+        self.unitsStyle = unitsStyle
+        self.presentation = presentation
+        self.capitalizationContext = capitalizationContext
+        self.expected = expected
+    }
+
+    var testDescription: String { "\(locale) \(value) \(field) -> \(expected)" }
+}
+
+/// Cases with the same output on the ICU path and on the Swift path (`FOUNDATION_RELATIVE_DATE_FORMAT_SWIFT`).
+@Suite("Date.RelativeFormatStyle locales")
+private struct DateRelativeFormatStyleLocaleTests {
+    static let numericCases: [RelativeFormatCase] = [
+        .init("en", .day, -1, "1 day ago"),
+        .init("en", .day, 0, "in 0 days"),
+        .init("en", .day, 2, "in 2 days"),
+        .init("en", .year, -3, "3 years ago"),
+        .init("en", .second, 1, "in 1 second"),
+        .init("en", .day, 3, "in 3d", unitsStyle: .narrow),
+        // Plural categories.
+        .init("ru", .day, 1, "через 1 день"),
+        .init("ru", .day, 2, "через 2 дня"),
+        .init("ru", .day, 5, "через 5 дней"),
+        .init("ru", .day, 21, "через 21 день"),
+        .init("ru", .day, -2, "2 дня назад"),
+        // Patterns without the number.
+        .init("ar", .day, 1, "خلال يوم واحد"),
+        .init("ar", .day, -2, "قبل يومين"),
+        .init("ar", .day, 11, "خلال 11 يومًا"),
+        // Grouping: separators, sizes, and minimum grouping digits.
+        .init("en", .day, 12345, "in 12,345 days"),
+        .init("es", .day, 1000, "dentro de 1000 días"),
+        .init("es", .day, 10000, "dentro de 10.000 días"),
+        .init("ru", .day, 12345, "через 12\u{A0}345 дней"),
+        .init("hi", .second, 1234567, "12,34,567 सेकंड में"),
+        // Digits of other numbering systems.
+        .init("en@numbers=arab", .day, 12345, "in ١٢٬٣٤٥ days"),
+        // An identifier whose region has no data uses the region's number symbols.
+        .init("en_RU", .day, 12345, "in 12\u{A0}345 days"),
+        // Spelled out and Roman numbers.
+        .init("en", .day, -21, "twenty-one days ago", unitsStyle: .spellOut),
+        .init("en@numbers=roman", .day, 12, "in XII days"),
+    ]
+
+    static let namedCases: [RelativeFormatCase] = [
+        .init("en", .day, -1, "yesterday", presentation: .named),
+        .init("en", .day, 0, "today", presentation: .named),
+        .init("en", .day, 1, "tomorrow", presentation: .named),
+        .init("en", .day, 2, "in 2 days", presentation: .named),
+        .init("en", .week, 1, "next week", presentation: .named),
+        .init("en", .second, 0, "now", presentation: .named),
+        .init("en", .second, 1, "in 1 second", presentation: .named),
+        .init("en", .hour, 0, "this hour", presentation: .named),
+        .init("de", .day, -2, "vorgestern", presentation: .named),
+    ]
+
+    static let capitalizationCases: [RelativeFormatCase] = [
+        .init("en", .day, -1, "Yesterday", presentation: .named, context: .beginningOfSentence),
+        .init("en", .day, -1, "yesterday", presentation: .named, context: .listItem),
+        .init("en", .day, -1, "yesterday", presentation: .named, context: .standalone),
+        .init("en", .day, 2, "In 2 days", context: .beginningOfSentence),
+        .init("en", .day, -2, "2 days ago", context: .beginningOfSentence),
+        // Turkish and Azerbaijani i.
+        .init("az", .second, 0, "İndi", presentation: .named, context: .beginningOfSentence),
+    ]
+
+    static let anchor = Date(timeIntervalSinceReferenceDate: 645_451_200) // 2021-06-15 12:00:00 GMT
+
+    static func format(_ c: RelativeFormatCase) throws -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let component: Calendar.Component = switch c.field {
+        case .year: .year
+        case .month: .month
+        case .week: .weekOfMonth
+        case .day: .day
+        case .hour: .hour
+        case .minute: .minute
+        default: .second
+        }
+        let style = Date.AnchoredRelativeFormatStyle(anchor: anchor, allowedFields: [c.field], presentation: c.presentation, unitsStyle: c.unitsStyle, locale: Locale(identifier: c.locale), calendar: calendar, capitalizationContext: c.capitalizationContext)
+        // The style formats the anchor relative to its input.
+        return style.format(try #require(calendar.date(byAdding: component, value: -c.value, to: anchor)))
+    }
+
+    @Test(arguments: numericCases)
+    func numeric(_ c: RelativeFormatCase) throws {
+        #expect(try Self.format(c) == c.expected)
+    }
+
+    @Test(arguments: namedCases)
+    func named(_ c: RelativeFormatCase) throws {
+        #expect(try Self.format(c) == c.expected)
+    }
+
+    @Test(arguments: capitalizationCases)
+    func capitalization(_ c: RelativeFormatCase) throws {
+        #expect(try Self.format(c) == c.expected)
+    }
+}
+
 // MARK: DiscreteFormatStyle conformance test
 
 @Suite("Date.AnchoredRelativeFormatStyle Discrete Conformance")
