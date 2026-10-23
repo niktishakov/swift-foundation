@@ -1610,6 +1610,177 @@ func withTemporaryFile(contents: Data, block: (_ url: URL) throws -> ()) throws 
 
 // MARK: -
 
+@Suite("String CharacterSet methods")
+private struct StringCharacterSetTests {
+    @Test(arguments: [
+        // (string, allowed characters, expected)
+        ("a b&c=d/e?f#g", CharacterSet.urlQueryAllowed, "a%20b&c=d/e?f%23g"),
+        ("a b&c=d/e?f#g", .urlPathAllowed, "a%20b&c=d/e%3Ff%23g"),
+        ("a b&c=d/e?f#g", .urlFragmentAllowed, "a%20b&c=d/e?f%23g"),
+        ("user:name@host", .urlUserAllowed, "user%3Aname%40host"),
+        ("a@b:c/d", .urlPasswordAllowed, "a%40b%3Ac%2Fd"),
+        ("[::1]:80 é", .urlHostAllowed, "%5B%3A%3A1%5D%3A80%20%C3%A9"),
+        ("100% ready", .alphanumerics, "100%25%20ready"),
+        ("😀é", .urlQueryAllowed, "%F0%9F%98%80%C3%A9"),
+        ("", .urlQueryAllowed, ""),
+    ])
+    func addingPercentEncoding(string: String, allowed: CharacterSet, expected: String) {
+        #expect(string.addingPercentEncoding(withAllowedCharacters: allowed) == expected)
+    }
+
+    @Test(arguments: [
+        // (string, expected)
+        ("%41%42", "AB"),
+        ("a%2Bb%20c", "a+b c"),
+        ("%E2%82%AC", "€"),
+        ("%e2%82%ac", "€"),
+        ("a+b", "a+b"),
+        ("%2", nil),
+        ("%C3", nil),
+    ])
+    func removingPercentEncoding(string: String, expected: String?) {
+        #expect(string.removingPercentEncoding == expected)
+    }
+
+    @Test(arguments: [
+        // (string, characters to trim, expected)
+        ("  hello world \n", CharacterSet.whitespacesAndNewlines, "hello world"),
+        ("\t\n", .whitespacesAndNewlines, ""),
+        ("..a.b..", .punctuationCharacters, "a.b"),
+        ("\u{3058}abc\u{3058}", CharacterSet(charactersIn: "\u{3058}"), "abc"),
+        ("e\u{301}x", .letters, ""),
+        ("😀a😀", .symbols, "a"),
+    ])
+    func trimmingCharacters(string: String, set: CharacterSet, expected: String) {
+        #expect(string.trimmingCharacters(in: set) == expected)
+    }
+
+    @Test(arguments: [
+        // (string, characters to find, options, expected range in Unicode scalar offsets)
+        ("hello, world", CharacterSet.punctuationCharacters, String.CompareOptions(), 5..<6),
+        ("a1b2c3", .decimalDigits, .backwards, 5..<6),
+        ("a1b2c3", .decimalDigits, .anchored, nil),
+        ("1a", .decimalDigits, .anchored, 0..<1),
+        ("e\u{301}", .nonBaseCharacters, [], 1..<2),
+    ] as [(String, CharacterSet, String.CompareOptions, Range<Int>?)])
+    func rangeOfCharacter(string: String, set: CharacterSet, options: String.CompareOptions, expected: Range<Int>?) {
+        let scalars = string.unicodeScalars
+        let range = string.rangeOfCharacter(from: set, options: options).map {
+            scalars.distance(from: scalars.startIndex, to: $0.lowerBound) ..< scalars.distance(from: scalars.startIndex, to: $0.upperBound)
+        }
+        #expect(range == expected)
+    }
+
+    @Test func rangeOfCharacterFrom() {
+        do {
+            let charset = CharacterSet(charactersIn: "абв")
+            do {
+                let s = "Глокая куздра"
+                let r = s.rangeOfCharacter(from: charset)!
+                #expect(s.index(s.startIndex, offsetBy: 4) == r.lowerBound)
+                #expect(s.index(s.startIndex, offsetBy: 5) == r.upperBound)
+            }
+            do {
+                #expect("клмн".rangeOfCharacter(from: charset) == nil)
+            }
+            do {
+                let s = "абвклмнабвклмн"
+                let r = s.rangeOfCharacter(from: charset,
+                                           options: .backwards)!
+                #expect(s.index(s.startIndex, offsetBy: 9) == r.lowerBound)
+                #expect(s.index(s.startIndex, offsetBy: 10) == r.upperBound)
+            }
+            do {
+                let s = "абвклмнабв"
+                let r = s.rangeOfCharacter(from: charset,
+                                           range: s.index(s.startIndex, offsetBy: 3)..<s.endIndex)!
+                #expect(s.index(s.startIndex, offsetBy: 7) == r.lowerBound)
+                #expect(s.index(s.startIndex, offsetBy: 8) == r.upperBound)
+            }
+        }
+
+        do {
+            let charset = CharacterSet(charactersIn: "\u{305f}\u{3099}")
+            #expect("\u{3060}".rangeOfCharacter(from: charset) == nil)
+        }
+        do {
+            let charset = CharacterSet(charactersIn: "\u{3060}")
+            #expect("\u{305f}\u{3099}".rangeOfCharacter(from: charset) == nil)
+        }
+
+        do {
+            let charset = CharacterSet(charactersIn: "\u{1F600}")
+            do {
+                let s = "abc\u{1F600}"
+                #expect("\u{1F600}" ==
+                            s[s.rangeOfCharacter(from: charset)!])
+            }
+            do {
+                #expect("abc\u{1F601}".rangeOfCharacter(from: charset) == nil)
+            }
+        }
+    }
+
+    @Test func addingPercentEncoding() {
+        #expect(
+            "abcd1234" ==
+            "abcd1234".addingPercentEncoding(withAllowedCharacters: .alphanumerics))
+        #expect(
+            "abcd%20%D0%B0%D0%B1%D0%B2%D0%B3" ==
+            "abcd абвг".addingPercentEncoding(withAllowedCharacters: .alphanumerics))
+    }
+
+    @Test func removingPercentEncoding() {
+        #expect(
+            "abcd абвг" ==
+            "abcd абвг".removingPercentEncoding)
+
+        #expect(
+            "abcd абвг\u{0000}\u{0001}" ==
+            "abcd абвг%00%01".removingPercentEncoding)
+
+        #expect(
+            "abcd абвг" ==
+            "%61%62%63%64%20%D0%B0%D0%B1%D0%B2%D0%B3".removingPercentEncoding)
+
+        #expect(
+            "abcd абвг" ==
+            "ab%63d %D0%B0%D0%B1%D0%B2%D0%B3".removingPercentEncoding)
+
+        #expect("%ED%B0".removingPercentEncoding == nil)
+
+        #expect("%zz".removingPercentEncoding == nil)
+
+        #expect("abcd%FF".removingPercentEncoding == nil)
+
+        #expect("%".removingPercentEncoding == nil)
+    }
+
+    @Test func removingPercentEncoding_() {
+        #expect("" == "".removingPercentEncoding)
+    }
+
+    @Test func trimmingCharacters() {
+        #expect("" == "".trimmingCharacters(
+            in: CharacterSet.decimalDigits))
+
+        #expect("abc" == "abc".trimmingCharacters(
+            in: CharacterSet.decimalDigits))
+
+        #expect("" == "123".trimmingCharacters(
+            in: CharacterSet.decimalDigits))
+
+        #expect("abc" == "123abc789".trimmingCharacters(
+            in: CharacterSet.decimalDigits))
+
+        // Performs Unicode scalar comparison.
+        #expect(
+            "し\u{3099}abc" ==
+            "し\u{3099}abc".trimmingCharacters(
+                in: CharacterSet(charactersIn: "\u{3058}")))
+    }
+}
+
 #if FOUNDATION_FRAMEWORK
 
 struct StringTestsStdlib {
@@ -2569,55 +2740,6 @@ struct StringTestsStdlib {
             .propertyListFromStringsFileFormat() as Dictionary<String, String>)
     }
 
-    @Test func rangeOfCharacterFrom() {
-        do {
-            let charset = CharacterSet(charactersIn: "абв")
-            do {
-                let s = "Глокая куздра"
-                let r = s.rangeOfCharacter(from: charset)!
-                #expect(s.index(s.startIndex, offsetBy: 4) == r.lowerBound)
-                #expect(s.index(s.startIndex, offsetBy: 5) == r.upperBound)
-            }
-            do {
-                #expect("клмн".rangeOfCharacter(from: charset) == nil)
-            }
-            do {
-                let s = "абвклмнабвклмн"
-                let r = s.rangeOfCharacter(from: charset,
-                                           options: .backwards)!
-                #expect(s.index(s.startIndex, offsetBy: 9) == r.lowerBound)
-                #expect(s.index(s.startIndex, offsetBy: 10) == r.upperBound)
-            }
-            do {
-                let s = "абвклмнабв"
-                let r = s.rangeOfCharacter(from: charset,
-                                           range: s.index(s.startIndex, offsetBy: 3)..<s.endIndex)!
-                #expect(s.index(s.startIndex, offsetBy: 7) == r.lowerBound)
-                #expect(s.index(s.startIndex, offsetBy: 8) == r.upperBound)
-            }
-        }
-
-        do {
-            let charset = CharacterSet(charactersIn: "\u{305f}\u{3099}")
-            #expect("\u{3060}".rangeOfCharacter(from: charset) == nil)
-        }
-        do {
-            let charset = CharacterSet(charactersIn: "\u{3060}")
-            #expect("\u{305f}\u{3099}".rangeOfCharacter(from: charset) == nil)
-        }
-
-        do {
-            let charset = CharacterSet(charactersIn: "\u{1F600}")
-            do {
-                let s = "abc\u{1F600}"
-                #expect("\u{1F600}" ==
-                            s[s.rangeOfCharacter(from: charset)!])
-            }
-            do {
-                #expect("abc\u{1F601}".rangeOfCharacter(from: charset) == nil)
-            }
-        }
-    }
 
     @Test func rangeOfComposedCharacterSequence() {
         let s = "\u{1F601}abc \u{305f}\u{3099} def"
@@ -2790,15 +2912,6 @@ struct StringTestsStdlib {
     @Test func smallestEncoding() {
         let availableEncodings: [String.Encoding] = String.availableStringEncodings
         #expect(availableEncodings.contains("abc".smallestEncoding))
-    }
-
-    @Test func addingPercentEncoding() {
-        #expect(
-            "abcd1234" ==
-            "abcd1234".addingPercentEncoding(withAllowedCharacters: .alphanumerics))
-        #expect(
-            "abcd%20%D0%B0%D0%B1%D0%B2%D0%B3" ==
-            "abcd абвг".addingPercentEncoding(withAllowedCharacters: .alphanumerics))
     }
 
     @Test func appendingFormat() {
@@ -2988,56 +3101,6 @@ struct StringTestsStdlib {
             of: "\u{1F601}", with: "\u{1F602}\u{1F603}",
             options: String.CompareOptions.literal,
             range: s.index(s.startIndex, offsetBy: 1)..<s.index(s.startIndex, offsetBy: 3)))
-    }
-
-    @Test func removingPercentEncoding() {
-        #expect(
-            "abcd абвг" ==
-            "abcd абвг".removingPercentEncoding)
-
-        #expect(
-            "abcd абвг\u{0000}\u{0001}" ==
-            "abcd абвг%00%01".removingPercentEncoding)
-
-        #expect(
-            "abcd абвг" ==
-            "%61%62%63%64%20%D0%B0%D0%B1%D0%B2%D0%B3".removingPercentEncoding)
-
-        #expect(
-            "abcd абвг" ==
-            "ab%63d %D0%B0%D0%B1%D0%B2%D0%B3".removingPercentEncoding)
-
-        #expect("%ED%B0".removingPercentEncoding == nil)
-
-        #expect("%zz".removingPercentEncoding == nil)
-
-        #expect("abcd%FF".removingPercentEncoding == nil)
-
-        #expect("%".removingPercentEncoding == nil)
-    }
-
-    @Test func removingPercentEncoding_() {
-        #expect("" == "".removingPercentEncoding)
-    }
-
-    @Test func trimmingCharacters() {
-        #expect("" == "".trimmingCharacters(
-            in: CharacterSet.decimalDigits))
-
-        #expect("abc" == "abc".trimmingCharacters(
-            in: CharacterSet.decimalDigits))
-
-        #expect("" == "123".trimmingCharacters(
-            in: CharacterSet.decimalDigits))
-
-        #expect("abc" == "123abc789".trimmingCharacters(
-            in: CharacterSet.decimalDigits))
-
-        // Performs Unicode scalar comparison.
-        #expect(
-            "し\u{3099}abc" ==
-            "し\u{3099}abc".trimmingCharacters(
-                in: CharacterSet(charactersIn: "\u{3058}")))
     }
 
     @Test func NSString_stringsByAppendingPaths() {

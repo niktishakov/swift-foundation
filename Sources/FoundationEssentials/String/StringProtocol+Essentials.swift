@@ -245,11 +245,12 @@ extension StringProtocol {
     }
 #endif
 
-#if FOUNDATION_FRAMEWORK
+    // TODO: Remove `@_disfavoredOverload` once Foundation uses this `CharacterSet` on all platforms. Until then, Foundation outside Darwin has its own version of this method, and calls after `import Foundation` should keep resolving to it instead of becoming ambiguous.
     /// Finds and returns the range in the `String` of the first
     /// character from a given character set found in a given range with
     /// given options.
     @available(macOS 10.10, iOS 8.0, watchOS 2.0, tvOS 9.0, *)
+    @_disfavoredOverload
     public func rangeOfCharacter(from aSet: CharacterSet, options mask: String.CompareOptions = [], range aRange: Range<Index>? = nil) -> Range<Index>? {
         var subStr = Substring(self)
         if let aRange {
@@ -257,7 +258,15 @@ extension StringProtocol {
         }
         return subStr._rangeOfCharacter(from: aSet, options: mask)
     }
-#endif // FOUNDATION_FRAMEWORK
+
+#if !FOUNDATION_FRAMEWORK
+    // TODO: Remove `@_disfavoredOverload` once Foundation uses this `CharacterSet` on all platforms. Until then, Foundation outside Darwin has its own version of this method, and calls after `import Foundation` should keep resolving to it instead of becoming ambiguous.
+    /// Returns a new string made by removing from both ends of the `String` characters contained in a given character set.
+    @_disfavoredOverload
+    public func trimmingCharacters(in set: CharacterSet) -> String {
+        String(Substring(self).unicodeScalars._trimmingCharacters(while: set.contains))
+    }
+#endif
 
     /// Returns a `Data` containing a representation of
     /// the `String` encoded using a given encoding.

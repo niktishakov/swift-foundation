@@ -759,11 +759,12 @@ extension URLEncoder {
     }
 }
 
-#if FOUNDATION_FRAMEWORK // Requires CharacterSet
 @available(macOS 10.10, iOS 8.0, watchOS 2.0, tvOS 9.0, *)
 extension StringProtocol {
+    // TODO: Remove `@_disfavoredOverload` once Foundation uses this `CharacterSet` on all platforms. Until then, Foundation outside Darwin has its own version of this method, and calls after `import Foundation` should keep resolving to it instead of becoming ambiguous.
     /// Returns a new string created by replacing all characters not in the
     /// specified set with percent-encoded characters.
+    @_disfavoredOverload
     public func addingPercentEncoding(withAllowedCharacters allowedCharacters: CharacterSet) -> String? {
 
         // rdar://17901698 The documentation states that this method can return
@@ -801,8 +802,10 @@ extension StringProtocol {
         return URLEncoder.percentEncode(string: string, component: mask, skipAlreadyEncoded: false)
     }
 
+    // TODO: Remove `@_disfavoredOverload` once Foundation uses this `CharacterSet` on all platforms. Until then, Foundation outside Darwin has its own version of this method, and calls after `import Foundation` should keep resolving to it instead of becoming ambiguous.
     /// Returns a new string created by replacing all percent-encoded sequences
     /// with the matching UTF-8 characters.
+    @_disfavoredOverload
     public var removingPercentEncoding: String? {
         #if FOUNDATION_FRAMEWORK
         guard foundation_swift_characterSet_enabled() else {
@@ -814,4 +817,3 @@ extension StringProtocol {
         )
     }
 }
-#endif

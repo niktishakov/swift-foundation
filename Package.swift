@@ -60,11 +60,11 @@ if let useLocalDepsEnv = Context.environment["SWIFTCI_USE_LOCAL_DEPS"], !useLoca
                 name: "swift-collections",
                 path: "\(root)/swift-collections"),
             .package(
-                name: "swift-foundation-icu",
-                path: "\(root)/swift-foundation-icu"),
-            .package(
                 name: "swift-syntax",
-                path: "\(root)/swift-syntax")
+                path: "\(root)/swift-syntax"),
+            .package(
+                name: "swift-foundation-icu",
+                path: "\(root)/swift-foundation-icu")
         ]
 } else {
     // These dependencies should match `update-checkout`
@@ -75,10 +75,10 @@ if let useLocalDepsEnv = Context.environment["SWIFTCI_USE_LOCAL_DEPS"], !useLoca
                 url: "https://github.com/apple/swift-collections",
                 exact: "1.7.3"),
             .package(
-                url: "https://github.com/apple/swift-foundation-icu",
+                url: "https://github.com/swiftlang/swift-syntax",
                 branch: "main"),
             .package(
-                url: "https://github.com/swiftlang/swift-syntax",
+                url: "https://github.com/apple/swift-foundation-icu",
                 branch: "main")
         ]
 }
@@ -92,7 +92,7 @@ let testOnlySwiftSettings: [SwiftSetting] = [
     .define("FOUNDATION_EXIT_TESTS", .when(platforms: [.macOS, .linux, .openbsd, .windows]))
 ]
 
-let package = Package(
+var package = Package(
     name: "swift-foundation",
     platforms: [.macOS("26"), .iOS("26"), .tvOS("26"), .watchOS("26"), .visionOS("26")],
     products: [
