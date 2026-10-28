@@ -217,6 +217,21 @@ private struct GregorianCalendarTests {
         test(.init(weekOfYear: 43, yearForWeekOfYear: 2935), expected: Date(timeIntervalSince1970: 30477945600.0))
     }
 
+    // Searches that skipped a nearer match, or returned a date that doesn't match.
+    @Test(arguments: [
+        (DateComponents(month: 3, weekday: 7), Date(timeIntervalSince1970: 1741348800), Calendar.SearchDirection.forward, Date(timeIntervalSince1970: 1741392000)), // from 2025-03-07T12:00:00Z, expected 2025-03-08T00:00:00Z
+        (DateComponents(weekdayOrdinal: 3), Date(timeIntervalSince1970: 1718704800), .forward, Date(timeIntervalSince1970: 1718755200)), // from 2024-06-18T10:00:00Z, expected 2024-06-19T00:00:00Z
+        (DateComponents(month: 11, weekdayOrdinal: 4), Date(timeIntervalSince1970: 1605142800), .forward, Date(timeIntervalSince1970: 1606003200)), // from 2020-11-12T01:00:00Z, expected 2020-11-22T00:00:00Z
+        (DateComponents(month: 9, weekday: 3, weekdayOrdinal: 1), Date(timeIntervalSince1970: 1578884400), .backward, Date(timeIntervalSince1970: 1567468800)), // from 2020-01-13T03:00:00Z, expected 2019-09-03T00:00:00Z
+        (DateComponents(month: 5), Date(timeIntervalSince1970: 1635163200), .backward, Date(timeIntervalSince1970: 1619827200)), // from 2021-10-25T12:00:00Z, expected 2021-05-01T00:00:00Z
+        (DateComponents(month: 2, weekday: 6, weekdayOrdinal: 1), Date(timeIntervalSince1970: 1802044800), .backward, Date(timeIntervalSince1970: 1801785600)), // from 2027-02-08T00:00:00Z, expected 2027-02-05T00:00:00Z
+    ] as [(DateComponents, Date, Calendar.SearchDirection, Date)])
+    func testNextDateFindsNearestMatch(components: DateComponents, start: Date, direction: Calendar.SearchDirection, expected: Date) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        #expect(calendar.nextDate(after: start, matching: components, matchingPolicy: .strict, direction: direction) == expected)
+    }
+
     @Test func testDateFromComponentsWeekOfMonth() {
         let cal = _CalendarGregorian(identifier: .gregorian, timeZone: .gmt, locale: nil, firstWeekday: 1, minimumDaysInFirstWeek: 1, gregorianStartDate: nil)
         func test(_ dateComponents: DateComponents, expected: Date, sourceLocation: SourceLocation = #_sourceLocation) {
