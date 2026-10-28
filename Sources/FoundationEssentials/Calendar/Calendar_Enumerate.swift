@@ -292,8 +292,6 @@ extension Calendar {
         }
 
         struct Iterator: Sendable, IteratorProtocol {
-            var iterations: Int
-            var previouslyReturnedMatchDate: Date?
             var searchingDate: Date
             
             let range: Range<Date>?
@@ -303,12 +301,11 @@ extension Calendar {
             let matchingPolicy: Calendar.MatchingPolicy
             let repeatedTimePolicy: Calendar.RepeatedTimePolicy
             let direction: Calendar.SearchDirection
-            let searchLimit: Int = 100
             
             // Calculated at init, checked on `next`
             var finished: Bool
             
-            // Fast-path: skip `_enumerateDatesStep` when the calendar can answer directly.
+            // Fast-path: skip the search when the calendar can answer directly.
             let usesFastPath: Bool
 
             internal init(_ calendar: Calendar, start: Date, range: Range<Date>?, matching matchingComponents: DateComponents, matchingPolicy: Calendar.MatchingPolicy, repeatedTimePolicy: Calendar.RepeatedTimePolicy, direction: Calendar.SearchDirection) {
@@ -320,7 +317,6 @@ extension Calendar {
                 self.repeatedTimePolicy = repeatedTimePolicy
                 self.direction = direction
                 self.start = start
-                iterations = -1
                 
                 // Start searching here
                 searchingDate = start
@@ -345,63 +341,20 @@ extension Calendar {
                         return nil
                     }
                     searchingDate = next
-                    previouslyReturnedMatchDate = next
                     return next
                 }
 
-                if direction == .backward {
-                    guard let (match, _) = calendar._latestMatch(before: searchingDate, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
-                        finished = true
-                        return nil
-                    }
-                    if let range, !range.contains(match) {
-                        finished = true
-                        return nil
-                    }
-                    searchingDate = match
-                    previouslyReturnedMatchDate = match
-                    return match
+                guard let (match, _) = calendar._nearestMatch(after: searchingDate, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
+                    _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
+                    finished = true
+                    return nil
                 }
-
-                repeat {
-                    iterations += 1
-                    do {
-                        let result = try calendar._enumerateDatesStep(startingAfter: start, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, direction: direction, inSearchingDate: searchingDate, previouslyReturnedMatchDate: previouslyReturnedMatchDate)
-                        
-                        searchingDate = result.newSearchDate
-                        
-                        // Return a value if we have a result. Else, continue on searching unless we've hit our search limit.
-                        // This version of the implementation ignores the 'exactMatch' result. Nobody cares unless they specify `strict`, and if they do that all results are exact anyway.
-                        if let (matchDate, _) = result.result {
-                            
-                            if let range, !range.contains(matchDate) {
-                                // We are outside the scope of our search
-                                finished = true
-                                return nil
-                            }
-                            
-                            previouslyReturnedMatchDate = matchDate
-                            return matchDate
-                        }
-                        
-                        if (iterations < searchLimit) {
-                            // Try again on nil result or not-exact match
-                            searchingDate = result.newSearchDate
-                            continue
-                        } else {
-                            // Give up
-                            _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
-                            finished = true
-                            return nil
-                        }
-                    } catch (let e as CalendarEnumerationError) {
-                        _handleCalendarError(e, date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
-                        finished = true
-                        return nil
-                    } catch {
-                        fatalError("Unexpected Calendar enumeration error type")
-                    }
-                } while true
+                if let range, !range.contains(match) {
+                    finished = true
+                    return nil
+                }
+                searchingDate = match
+                return match
             }
         }
         
@@ -478,15 +431,7 @@ extension Calendar {
 }
 
 extension Calendar {
-    struct SearchStepResult {
-        /// `nil` if there was no result.
-        var result: (Date, Bool)?
-
-        /// The input to the next round of iteration on the original search parameters.
-        var newSearchDate: Date
-    }
-
-    /// The units a backward search walks through, from the largest to the smallest, with the components each one checks.
+    /// The units a search walks through, from the largest to the smallest, with the components each one checks.
     private func _searchLevels(for comps: DateComponents) -> [(Calendar.Component, [Calendar.Component])] {
         let all: [(Calendar.Component, [Calendar.Component])] = [
             (.year, [.era, .year]),
@@ -501,24 +446,30 @@ extension Calendar {
         ]
         return all.compactMap { unit, checks in
             let set = checks.filter { comps.value(for: $0) != nil }
-            // A week of the month is counted inside its month, so weeks are cut at month boundaries when it is set.
-            let keepMonth = unit == .month && (comps.isLeapMonth != nil || comps.weekOfMonth != nil)
+            // A day of the month, a weekday ordinal and a week of the month are counted inside their month, so the search goes month by month when one is set.
+            let keepMonth = unit == .month && (comps.isLeapMonth != nil || comps.day != nil || comps.weekdayOrdinal != nil || comps.weekOfMonth != nil)
             return set.isEmpty && !keepMonth ? nil : (unit, set)
         }
     }
 
-    /// The latest date before `upper` that matches `comps`: the start of the latest piece of the smallest unit set, searched inside the pieces of the larger units. When a value is in a gap, such as a day after the end of a short month or an hour skipped by a daylight saving time change, the matching policy picks a date next to the gap.
-    fileprivate func _latestMatch(before upper: Date, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date) -> (Date, Bool)? {
+    /// The nearest date after `bound` in `direction` that matches `comps`. Each unit that is set is searched only inside the piece of the larger unit that matched, so a match can't leave a month, a week or a day that an earlier unit chose. When a value is in a gap, such as a day after the end of a short month or an hour skipped by a daylight saving time change, the matching policy picks a date next to the gap.
+    fileprivate func _nearestMatch(after bound: Date, direction: SearchDirection, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date) -> (Date, Bool)? {
         let levels = _searchLevels(for: comps)
         guard !levels.isEmpty else { return nil }
+        let backward = direction == .backward
         // The nanosecond is added to the start of the smallest unit that is found.
         let nanosecond = TimeInterval(comps.nanosecond ?? 0) / 1_000_000_000
-        let outer = DateInterval(start: upper - 400 * 366 * 86400, end: upper)
+        let span: TimeInterval = 400 * 366 * 86400
+        let outer = backward ? DateInterval(start: bound - span, end: bound) : DateInterval(start: bound, end: bound + span)
         var budget = 50_000
+
+        func isBeyondBound(_ date: Date) -> Bool {
+            backward ? date < bound : date > bound
+        }
 
         // The time of day below `unit` for a date next to a gap: the components that are set, else the ones of the start date.
         func withSmallerComponents(_ date: Date, below unit: Calendar.Component) -> Date? {
-            let units: [Calendar.Component] = [.hour, .minute, .second]
+            let units: [Calendar.Component] = [.day, .hour, .minute, .second]
             guard let first = units.firstIndex(where: { _isSmaller($0, than: unit) }) else { return date }
             var result = date
             for u in units[first...] {
@@ -533,60 +484,85 @@ extension Calendar {
         func search(_ window: DateInterval, _ index: Int) -> (Date, Bool)? {
             guard index < levels.count else {
                 let match = window.start + nanosecond
-                return match < window.end ? (match, true) : nil
+                return match < window.end && isBeyondBound(match) ? (match, true) : nil
             }
             let (unit, checks) = levels[index]
-            // A gap only makes sense for the single value of a time unit or a day number.
-            let gapComponent: Calendar.Component? = checks.count == 1 && [.day, .hour, .minute, .second].contains(checks[0]) ? checks[0] : nil
-            var t = window.end - 0.001
-            var later: (piece: DateInterval, value: Int)?
-            while t >= window.start {
+
+            func piece(at t: Date) -> DateInterval? {
+                guard let interval = dateInterval(of: unit, for: t) else { return nil }
+                return DateInterval(start: max(interval.start, window.start), end: min(interval.end, window.end))
+            }
+            func matches(_ piece: DateInterval) -> Bool {
+                guard checks.allSatisfy({ component($0, from: piece.start) == comps.value(for: $0) }) else { return false }
+                if unit == .month, let leap = comps.isLeapMonth {
+                    return _dateComponents(.month, from: piece.start).isLeapMonth == leap
+                }
+                return true
+            }
+            // A value that time skips over makes sense only for the single value of a time unit, a day number or a leap month.
+            let gapComponent: Calendar.Component? = checks.count == 1 && [.month, .day, .hour, .minute, .second].contains(checks[0]) ? checks[0] : nil
+            // Months are ordered with a leap month right after the month it repeats.
+            func key(_ date: Date) -> Int {
+                guard gapComponent == .month else { return component(gapComponent ?? unit, from: date) }
+                let month = _dateComponents(.month, from: date)
+                return (month.month ?? 0) * 2 + (month.isLeapMonth == true ? 1 : 0)
+            }
+            // The date next to a gap, picked by the matching policy. `before` is the piece before the gap in time, `after` is where time continues after it.
+            func nearGap(before: DateInterval, after: Date) -> Date? {
+                switch matchingPolicy {
+                case .nextTime:
+                    return after
+                case .nextTimePreservingSmallerComponents:
+                    return dateInterval(of: unit, for: after).flatMap { withSmallerComponents($0.start, below: unit) }
+                case .previousTimePreservingSmallerComponents:
+                    return withSmallerComponents(before.start, below: unit)
+                default:
+                    return nil
+                }
+            }
+            let wanted: Int? = gapComponent == .month ? comps.month.map { $0 * 2 + (comps.isLeapMonth == true ? 1 : 0) } : gapComponent.flatMap { comps.value(for: $0) }
+            // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top. Inside a quarter or a year, a later month can have the day.
+            let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].0 == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
+
+            var t = backward ? window.end - 0.001 : window.start
+            var previous: (piece: DateInterval, value: Int)?
+            while backward ? t >= window.start : t < window.end {
                 budget -= 1
-                guard budget > 0, let interval = dateInterval(of: unit, for: t) else { return nil }
-                let piece = DateInterval(start: max(interval.start, window.start), end: min(interval.end, window.end))
-                var matches = checks.allSatisfy { component($0, from: piece.start) == comps.value(for: $0) }
-                if matches, unit == .month, let leap = comps.isLeapMonth {
-                    matches = _dateComponents(.month, from: piece.start).isLeapMonth == leap
-                }
-                if matches {
-                    // When a time repeats, a backward search finds the later one first; `.last` asks for the earlier one.
-                    if repeatedTimePolicy == .last, [.hour, .minute, .second].contains(unit), let earlier = dateInterval(of: unit, for: piece.start - 0.001), earlier.start >= window.start, checks.allSatisfy({ component($0, from: earlier.start) == comps.value(for: $0) }), let found = search(earlier, index + 1) {
-                        return found
-                    }
-                    if let found = search(piece, index + 1) {
-                        return found
+                guard budget > 0, let current = piece(at: t) else { return nil }
+                // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
+                var isSkippedRepeat = false
+                if [.hour, .minute, .second].contains(unit) {
+                    let neighborTime = (repeatedTimePolicy == .first) == backward ? current.end : current.start - 0.001
+                    if let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime), neighbor.start != own.start, checks.allSatisfy({ component($0, from: neighbor.start) == comps.value(for: $0) }) {
+                        isSkippedRepeat = true
                     }
                 }
-                if matchingPolicy != .strict, let gapComponent, let wanted = comps.value(for: gapComponent) {
-                    let value = component(gapComponent, from: piece.start)
-                    // The value would be between this piece and the later one, or after the last day of a whole month.
-                    let afterGap: Date?
-                    if let later, value < wanted, wanted < later.value {
-                        afterGap = later.piece.start
-                    } else if later == nil, value < wanted, gapComponent == .day, index > 0, levels[index - 1].0 == .month, let month = dateInterval(of: .month, for: window.start), month.end == window.end {
-                        afterGap = window.end
-                    } else {
-                        afterGap = nil
-                    }
-                    if let afterGap {
-                        let candidate: Date?
-                        switch matchingPolicy {
-                        case .nextTime:
-                            candidate = afterGap
-                        case .nextTimePreservingSmallerComponents:
-                            candidate = dateInterval(of: unit, for: afterGap).flatMap { withSmallerComponents($0.start, below: unit) }
-                        case .previousTimePreservingSmallerComponents:
-                            candidate = withSmallerComponents(piece.start, below: unit)
-                        default:
-                            candidate = nil
+                if !isSkippedRepeat, matches(current), let found = search(current, index + 1) {
+                    return found
+                }
+                if matchingPolicy != .strict, gapComponent != nil, let wanted {
+                    let value = key(current.start)
+                    var gap: (before: DateInterval, after: Date)?
+                    if let previous {
+                        // The wanted value is skipped between two neighboring pieces.
+                        let (earlier, later, earlierValue, laterValue) = backward ? (current, previous.piece, value, previous.value) : (previous.piece, current, previous.value, value)
+                        if earlierValue < wanted, wanted < laterValue {
+                            gap = (earlier, later.start)
                         }
-                        if let candidate, candidate < upper {
-                            return (candidate, false)
-                        }
+                    } else if backward, wholeMonth, value < wanted {
+                        // The month ends before the wanted day.
+                        gap = (current, window.end)
+                    }
+                    if let gap, let candidate = nearGap(before: gap.before, after: gap.after), isBeyondBound(candidate) {
+                        return (candidate, false)
                     }
                 }
-                later = (piece, component(gapComponent ?? unit, from: piece.start))
-                t = piece.start - 0.001
+                previous = (current, key(current.start))
+                t = backward ? current.start - 0.001 : current.end
+            }
+            // Searching forward, the month can end before the wanted day.
+            if !backward, matchingPolicy != .strict, wholeMonth, let wanted, let previous, previous.value < wanted, let candidate = nearGap(before: previous.piece, after: window.end), isBeyondBound(candidate) {
+                return (candidate, false)
             }
             return nil
         }
@@ -600,7 +576,6 @@ extension Calendar {
     }
 
     internal func _enumerateDates(startingAfter start: Date,
-                                  previouslyReturnedMatchDate: Date? = nil,
                                   matching matchingComponents: DateComponents,
                                   matchingPolicy: MatchingPolicy,
                                   repeatedTimePolicy: RepeatedTimePolicy,
@@ -614,99 +589,20 @@ extension Calendar {
             return
         }
 
-        if direction == .backward {
-            // Prototype: find each earlier match by searching nested windows.
-            var upper = start
-            while true {
-                var stop = false
-                guard let (match, exact) = _latestMatch(before: upper, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
-                    block(nil, false, &stop)
-                    return
-                }
-                block(match, exact, &stop)
-                if stop { return }
-                upper = match
-            }
-        }
-
-        let STOP_EXHAUSTIVE_SEARCH_AFTER_MAX_ITERATIONS = 100
-
-        var searchingDate = start
-        var previouslyReturnedMatchDate = previouslyReturnedMatchDate
-        var iterations = -1
-
-        repeat {
-            iterations += 1
-            do {
-                let result = try _enumerateDatesStep(startingAfter: start, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, direction: direction, inSearchingDate: searchingDate, previouslyReturnedMatchDate: previouslyReturnedMatchDate)
-                
-                searchingDate = result.newSearchDate
-                
-                if let (matchDate, exactMatch) = result.result {
-                    var stop = false
-                    previouslyReturnedMatchDate = matchDate
-                    block(matchDate, exactMatch, &stop)
-                    if stop {
-                        return
-                    }
-                } else if (iterations < STOP_EXHAUSTIVE_SEARCH_AFTER_MAX_ITERATIONS) {
-                    // Try again on nil result
-                    searchingDate = result.newSearchDate
-                    continue
-                } else {
-                    // Give up
-                    _handleCalendarResultNotFound(date: start, calendar: self, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
-                    return
-                }
-            } catch (let e as CalendarEnumerationError) {
-                _handleCalendarError(e, date: start, calendar: self, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
+        var bound = start
+        while true {
+            var stop = false
+            guard let (match, exact) = _nearestMatch(after: bound, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
+                _handleCalendarResultNotFound(date: start, calendar: self, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
+                block(nil, false, &stop)
                 return
-            } catch {
-                fatalError("Unexpected Calendar enumeration error type")
             }
-        } while true
+            block(match, exact, &stop)
+            if stop { return }
+            bound = match
+        }
     }
 
-    // Returns nil if there was no result. It's up to the caller to decide what to do about that (try again, or cancel).
-    fileprivate func _enumerateDatesStep(startingAfter start: Date,
-                                         matching matchingComponents: DateComponents,
-                                         matchingPolicy: MatchingPolicy,
-                                         repeatedTimePolicy: RepeatedTimePolicy,
-                                         direction: SearchDirection,
-                                         inSearchingDate searchingDate: Date,
-                                         previouslyReturnedMatchDate: Date?) throws -> SearchStepResult {
-
-        // Fast-path: ask the calendar directly.
-        if _supportsNextDateFastPath(for: matchingComponents._populatedComponentSet) && matchingPolicy == .nextTime && repeatedTimePolicy == .first {
-            if let fast = _calendarNextDate(after: searchingDate, matching: matchingComponents, direction: direction) {
-                return SearchStepResult(result: (fast, true), newSearchDate: fast)
-            }
-            return SearchStepResult(result: nil, newSearchDate: searchingDate)
-        }
-
-        // Step A: Call helper method that does the searching
-
-        /* Note: The reasoning behind this is a bit difficult to immediately grok because it's not obvious but what it does is ensure that the algorithm enumerates through each year or month if they are not explicitly set in the DateComponents passed in by the caller.  This only applies to cases where the highest set unit is month or day (at least for now).
-         For ex, let's say comps is set the following way:
-         { Day: 31 }
-         We want to enumerate through all of the months that have a 31st day.  If strict is set, the algorithm automagically skips over the months that don't have a 31st day and we pass the desired results to the caller.  However, if any of the approximation options are set, we can't skip the months that don't have a 31st day - we need to provide the appropriate approximate date for them.  Calling this method allows us to see that day is the highest unit set in comps, and sets the month value in compsToMatch (previously unset in matchingComponents) to whatever the month is of the date we're using to search.
-
-         Ex: searchingDate is '2016-06-10 07:00:00 +0000' so { Day: 31 } becomes { Month: 6, Day: 31 } in compsToMatch
-
-         This way, the algorithm from here on out sees that month is now the highest set unit and we ensure that we search for the day we want in each month and provide an approximation when we can't find it, thus getting the results the caller expects.
-
-         Ex: { Month: 6, Day: 31 } does not exist so if nextTime is set, we pass '2016-07-01 07:00:00 +0000' to the block.
-         */
-        let compsToMatch = _adjustedComponents(matchingComponents, date: searchingDate, direction: direction)
-
-        guard let unadjustedMatchDate = try _matchingDate(after: searchingDate, matching: compsToMatch, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy) else {
-            // TODO: Check if returning the same searchingDate has any purpose
-            return SearchStepResult(result: nil, newSearchDate: searchingDate)
-        }
-        
-        return try _adjustedDate(unadjustedMatchDate, startingAfter: start, matching: matchingComponents, adjustedMatchingComponents: compsToMatch , matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, direction: direction, inSearchingDate: searchingDate, previouslyReturnedMatchDate: previouslyReturnedMatchDate)
-    }
-    
     internal func _adjustedDate(_ unadjustedMatchDate: Date, startingAfter start: Date,
                                 allowStartDate: Bool = false,
                                 matching matchingComponents: DateComponents,
@@ -809,37 +705,6 @@ extension Calendar {
         }
 
         return SearchStepResult(result: (matchDate, exactMatch), newSearchDate: searchingDate)
-    }
-
-    // MARK: -
-
-    func _adjustedComponents(_ comps: DateComponents, date: Date, direction: SearchDirection) -> DateComponents {
-        // This method ensures that the algorithm enumerates through each year or month if they are not explicitly set in the DateComponents passed into enumerateDates.  This only applies to cases where the highest set unit is month or day (at least for now).  For full in context explanation, see where it gets called in enumerateDates.
-
-        let highestSetUnit = comps.highestSetUnit
-        switch highestSetUnit {
-        case .some(.month):
-            var adjusted = comps
-            adjusted.year = component(.year, from: date)
-            // TODO: can year ever be nil here?
-            if let adjustedDate = self.date(from: adjusted) {
-                if date > adjustedDate {
-                    adjusted.year = adjusted.year! + 1
-                }
-            }
-            return adjusted
-        case .some(.day):
-            var adjusted = comps
-            // We can only add the month if it won't make us search backward in time: on Nov 05, the next 15th can be Nov 15, but the next 2nd can't be Nov 02.
-            let dateDay = component(.day, from: date)
-            if comps.day ?? Int.max > dateDay {
-                adjusted.month = component(.month, from: date)
-            }
-            return adjusted
-        default:
-            // Nothing to adjust
-            return comps
-        }
     }
 
     // This function checks the input (assuming we've detected a mismatch hour), for a DST transition. If we find one, then it returns a new date. Otherwise it returns nil.
@@ -1230,7 +1095,7 @@ extension Calendar {
                         compsCopy.month = monthDayComps.month
                         compsCopy.day = monthDayComps.day
                         compsCopy.isLeapMonth = true
-                        dateToUse = _latestMatch(before: lastDayEnd, matching: compsCopy, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start)?.0
+                        dateToUse = _nearestMatch(after: lastDayEnd, direction: .backward, matching: compsCopy, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start)?.0
                     }
                 }
 
@@ -1398,7 +1263,14 @@ extension Calendar {
         }
     }
 
-    // MARK: -
+    private func preserveSmallerUnits(_ date: Date, compsToMatch: DateComponents, compsToModify: inout DateComponents) {
+        let smallerUnits = _dateComponents(.init(.hour, .minute, .second), from: date)
+
+        // Either preserve the units we're trying to match if they are explicitly defined or preserve the hour/min/sec in the date.
+        compsToModify.hour = compsToMatch.hour ?? smallerUnits.hour
+        compsToModify.minute = compsToMatch.minute ?? smallerUnits.minute
+        compsToModify.second = compsToMatch.second ?? smallerUnits.second
+    }
 
     func _matchingDate(after startDate: Date,
                        matching comps: DateComponents,
@@ -1522,17 +1394,118 @@ extension Calendar {
         return searchStartDate
     }
 
-    // MARK: Create Next Helpers -
-
-    private func verifyAdvancingResult(_ next: Date, previous: Date, direction: Calendar.SearchDirection) throws {
-        if (direction == .forward && next <= previous) || (direction == .backward && next >= previous) {
+    private func verifyUnequalResult(_ next: Date, previous: Date, startingAt: Date, components: DateComponents, direction: Calendar.SearchDirection, strict: Bool?) throws {
+        if (next == previous) {
             // We are not advancing. Bail out of the loop
             throw CalendarEnumerationError.notAdvancing(next, previous)
         }
     }
-    
-    private func verifyUnequalResult(_ next: Date, previous: Date, startingAt: Date, components: DateComponents, direction: Calendar.SearchDirection, strict: Bool?) throws {
-        if (next == previous) {
+
+    private func bumpedDateUpToNextHigherUnitInComponents(_ searchingDate: Date, _ comps: DateComponents, _ direction: SearchDirection, _ matchDate: Date?) -> Date? {
+        guard let highestSetUnit = comps.highestSetUnit else {
+            // Empty components?
+            return nil
+        }
+
+        let nextUnitAboveHighestSet: Component
+
+        if highestSetUnit == .era {
+            nextUnitAboveHighestSet = .year
+        } else if highestSetUnit == .year || highestSetUnit == .yearForWeekOfYear {
+            nextUnitAboveHighestSet = highestSetUnit
+        } else {
+            guard let next = highestSetUnit.nextHigherUnit else {
+                return nil
+            }
+            nextUnitAboveHighestSet = next
+        }
+
+        // Advance to the start or end of the next highest unit. Old code here used to add `±1 nextUnitAboveHighestSet` to searchingDate and manually adjust afterwards, but this is incorrect in many cases.
+        // For instance, this is wrong when searching forward looking for a specific Week of Month. Take for example, searching for WoM == 1:
+        //
+        //           January 2018           February 2018
+        //       Su Mo Tu We Th Fr Sa    Su Mo Tu We Th Fr Sa
+        //  W1       1  2  3  4  5  6                 1  2  3
+        //  W2    7  8  9 10 11 12 13     4  5  6  7  8  9 10
+        //  W3   14 15 16 17 18 19 20    11 12 13 14 15 16 17
+        //  W4   21 22 23 24 25 26 27    18 19 20 21 22 23 24
+        //  W5   28 29 30 31             25 26 27 28
+        //
+        // Consider searching for `WoM == 1` when searchingDate is *in* W1 of January. Because we're looking to advance to next month, we could simply add a month, right?
+        // Adding a month from Monday, January 1st lands us on Thursday, February 1st; from Tuesday, January 2nd we get Friday, February 2nd, etc. Note though that for January 4th, 5th, and 6th, adding a month lands us in **W2** of February!
+        // This means that if we continue searching forward from there, we'll have completely skipped W1 of February as a candidate week, and search forward until we hit W1 of March. This is incorrect.
+        //
+        // What we really want is to skip to the _start_ of February and search from there -- if we undershoot, we can always keep looking.
+        // Searching backwards is similar: we can overshoot if we were subtracting a month, so instead we want to jump back to the very end of the previous month.
+        // In general, this translates to jumping to the very beginning of the next period of the next highest unit when searching forward, or jumping to the very end of the last period when searching backward.
+
+        guard let foundRange = dateInterval(of: nextUnitAboveHighestSet, for: searchingDate) else {
+            return nil
+        }
+
+        var result = foundRange.start + foundRange.duration
+
+        if let matchDate {
+            let ordering = ComparisonResult(matchDate, result)
+            if ordering != .orderedAscending {
+                // We need to advance searchingDate so that it starts just after matchDate
+                // We already guarded against an empty components above, so force unwrap here
+                let lowestSetUnit = comps.lowestSetUnit!
+                guard let date = date(byAdding: lowestSetUnit, value: 1, to: matchDate) else {
+                    return nil
+                }
+                result = date
+            }
+        }
+
+        return result
+    }
+
+    struct SearchStepResult {
+        /// `nil` if there was no result.
+        var result: (Date, Bool)?
+
+        /// The input to the next round of iteration on the original search parameters.
+        var newSearchDate: Date
+    }
+
+    // MARK: -
+
+    func _adjustedComponents(_ comps: DateComponents, date: Date, direction: SearchDirection) -> DateComponents {
+        // This method ensures that the algorithm enumerates through each year or month if they are not explicitly set in the DateComponents passed into enumerateDates.  This only applies to cases where the highest set unit is month or day (at least for now).  For full in context explanation, see where it gets called in enumerateDates.
+
+        let highestSetUnit = comps.highestSetUnit
+        switch highestSetUnit {
+        case .some(.month):
+            var adjusted = comps
+            adjusted.year = component(.year, from: date)
+            // TODO: can year ever be nil here?
+            if let adjustedDate = self.date(from: adjusted) {
+                if date > adjustedDate {
+                    adjusted.year = adjusted.year! + 1
+                }
+            }
+            return adjusted
+        case .some(.day):
+            var adjusted = comps
+            // We can only add the month if it won't make us search backward in time: on Nov 05, the next 15th can be Nov 15, but the next 2nd can't be Nov 02.
+            let dateDay = component(.day, from: date)
+            if comps.day ?? Int.max > dateDay {
+                adjusted.month = component(.month, from: date)
+            }
+            return adjusted
+        default:
+            // Nothing to adjust
+            return comps
+        }
+    }
+
+    // MARK: -
+
+    // MARK: Create Next Helpers -
+
+    private func verifyAdvancingResult(_ next: Date, previous: Date, direction: Calendar.SearchDirection) throws {
+        if (direction == .forward && next <= previous) || (direction == .backward && next >= previous) {
             // We are not advancing. Bail out of the loop
             throw CalendarEnumerationError.notAdvancing(next, previous)
         }
@@ -2368,76 +2341,8 @@ extension Calendar {
 
     // MARK: -
 
-    private func bumpedDateUpToNextHigherUnitInComponents(_ searchingDate: Date, _ comps: DateComponents, _ direction: SearchDirection, _ matchDate: Date?) -> Date? {
-        guard let highestSetUnit = comps.highestSetUnit else {
-            // Empty components?
-            return nil
-        }
-
-        let nextUnitAboveHighestSet: Component
-
-        if highestSetUnit == .era {
-            nextUnitAboveHighestSet = .year
-        } else if highestSetUnit == .year || highestSetUnit == .yearForWeekOfYear {
-            nextUnitAboveHighestSet = highestSetUnit
-        } else {
-            guard let next = highestSetUnit.nextHigherUnit else {
-                return nil
-            }
-            nextUnitAboveHighestSet = next
-        }
-
-        // Advance to the start or end of the next highest unit. Old code here used to add `±1 nextUnitAboveHighestSet` to searchingDate and manually adjust afterwards, but this is incorrect in many cases.
-        // For instance, this is wrong when searching forward looking for a specific Week of Month. Take for example, searching for WoM == 1:
-        //
-        //           January 2018           February 2018
-        //       Su Mo Tu We Th Fr Sa    Su Mo Tu We Th Fr Sa
-        //  W1       1  2  3  4  5  6                 1  2  3
-        //  W2    7  8  9 10 11 12 13     4  5  6  7  8  9 10
-        //  W3   14 15 16 17 18 19 20    11 12 13 14 15 16 17
-        //  W4   21 22 23 24 25 26 27    18 19 20 21 22 23 24
-        //  W5   28 29 30 31             25 26 27 28
-        //
-        // Consider searching for `WoM == 1` when searchingDate is *in* W1 of January. Because we're looking to advance to next month, we could simply add a month, right?
-        // Adding a month from Monday, January 1st lands us on Thursday, February 1st; from Tuesday, January 2nd we get Friday, February 2nd, etc. Note though that for January 4th, 5th, and 6th, adding a month lands us in **W2** of February!
-        // This means that if we continue searching forward from there, we'll have completely skipped W1 of February as a candidate week, and search forward until we hit W1 of March. This is incorrect.
-        //
-        // What we really want is to skip to the _start_ of February and search from there -- if we undershoot, we can always keep looking.
-        // Searching backwards is similar: we can overshoot if we were subtracting a month, so instead we want to jump back to the very end of the previous month.
-        // In general, this translates to jumping to the very beginning of the next period of the next highest unit when searching forward, or jumping to the very end of the last period when searching backward.
-
-        guard let foundRange = dateInterval(of: nextUnitAboveHighestSet, for: searchingDate) else {
-            return nil
-        }
-
-        var result = foundRange.start + foundRange.duration
-
-        if let matchDate {
-            let ordering = ComparisonResult(matchDate, result)
-            if ordering != .orderedAscending {
-                // We need to advance searchingDate so that it starts just after matchDate
-                // We already guarded against an empty components above, so force unwrap here
-                let lowestSetUnit = comps.lowestSetUnit!
-                guard let date = date(byAdding: lowestSetUnit, value: 1, to: matchDate) else {
-                    return nil
-                }
-                result = date
-            }
-        }
-
-        return result
-    }
-
     // MARK: -
 
-    private func preserveSmallerUnits(_ date: Date, compsToMatch: DateComponents, compsToModify: inout DateComponents) {
-        let smallerUnits = _dateComponents(.init(.hour, .minute, .second), from: date)
-
-        // Either preserve the units we're trying to match if they are explicitly defined or preserve the hour/min/sec in the date.
-        compsToModify.hour = compsToMatch.hour ?? smallerUnits.hour
-        compsToModify.minute = compsToMatch.minute ?? smallerUnits.minute
-        compsToModify.second = compsToMatch.second ?? smallerUnits.second
-    }
 }
 
 extension Calendar.Component {
