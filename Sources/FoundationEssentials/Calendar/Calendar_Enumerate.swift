@@ -1357,10 +1357,14 @@ extension Calendar {
             guard direction == .backward, let period = dateInterval(of: unit, for: result) else {
                 return result
             }
-            guard let precision, let last = dateInterval(of: precision, for: period.end - 1) else {
-                return period.start
+            var landed = period.start
+            if let precision, let last = dateInterval(of: precision, for: period.end - 1) {
+                landed = max(last.start, landed)
             }
-            let landed = max(last.start, period.start)
+            // The month stage runs after the quarter and week of year stages, and a month can start inside their period. Start in the last month of the period, or the month stage moves back to an earlier year.
+            if comps.month != nil, unit == .quarter || unit == .weekOfYear, let lastMonth = dateInterval(of: .month, for: period.end - 1) {
+                landed = max(lastMonth.start, landed)
+            }
             return landed < startDate ? landed : result
         }
 
