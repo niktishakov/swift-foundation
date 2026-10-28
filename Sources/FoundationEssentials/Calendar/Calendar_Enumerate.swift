@@ -1346,6 +1346,24 @@ extension Calendar {
 
         let isStrictMatching = matchingPolicy == .strict
 
+        // A backward search that finds a larger unit continues from the start of the last unit that the following stages search in, so they see the whole larger unit. The time stages search forward within the next larger unit, so that is one level above the smallest unit set: a day for an hour, an hour for a minute.
+        let precision: Calendar.Component? = if comps.nanosecond != nil || comps.second != nil { .minute }
+            else if comps.minute != nil { .hour }
+            else if comps.hour != nil || comps.day != nil || comps.weekday != nil || comps.weekdayOrdinal != nil || comps.dayOfYear != nil { .day }
+            else if comps.weekOfMonth != nil || comps.weekOfYear != nil { .weekOfMonth }
+            else { nil }
+
+        func landing(_ result: Date, in unit: Calendar.Component) -> Date {
+            guard direction == .backward, let period = dateInterval(of: unit, for: result) else {
+                return result
+            }
+            guard let precision, let last = dateInterval(of: precision, for: period.end - 1) else {
+                return period.start
+            }
+            let landed = max(last.start, period.start)
+            return landed < startDate ? landed : result
+        }
+
         var matchedEra = true
         var searchStartDate = startDate
 
@@ -1367,11 +1385,11 @@ extension Calendar {
         }
 
         if let result = try dateAfterMatchingQuarter(startingAt: searchStartDate, components: comps, direction: direction) {
-            searchStartDate = result
+            searchStartDate = landing(result, in: .quarter)
         }
 
         if let result = try dateAfterMatchingWeekOfYear(startingAt: searchStartDate, components: comps, direction: direction) {
-            searchStartDate = result
+            searchStartDate = landing(result, in: .weekOfYear)
         }
         
         if let result = try dateAfterMatchingDayOfYear(startingAt: searchStartDate, components: comps, direction: direction) {
@@ -1379,11 +1397,11 @@ extension Calendar {
         }
 
         if let result = try dateAfterMatchingMonth(startingAt: searchStartDate, components: comps, direction: direction, strictMatching: isStrictMatching) {
-            searchStartDate = result
+            searchStartDate = landing(result, in: .month)
         }
 
         if let result = try dateAfterMatchingWeekOfMonth(startingAt: searchStartDate, components: comps, direction: direction) {
-            searchStartDate = result
+            searchStartDate = landing(result, in: .weekOfMonth)
         }
 
         if let result = try dateAfterMatchingWeekdayOrdinal(startingAt: searchStartDate, components: comps, direction: direction) {
@@ -1433,6 +1451,14 @@ extension Calendar {
         }
     }
     
+    /// The start of the `unit` that ends where the `unit` starting at `start` begins. Stepping back by the length of the current one can land in the wrong place when the two have different lengths, such as months or days with a daylight saving time change.
+    private func startOfPrevious(_ unit: Calendar.Component, before start: Date) throws -> Date {
+        guard let previous = dateInterval(of: unit, for: start - 1) else {
+            throw CalendarEnumerationError.dateOutOfRange(unit, start)
+        }
+        return previous.start
+    }
+
     internal func dateAfterMatchingEra(startingAt startDate: Date, components: DateComponents, direction: SearchDirection, matchedEra: inout Bool) -> Date? {
         guard let era = components.era else {
             // Nothing to do
@@ -1549,7 +1575,7 @@ extension Calendar {
                 guard let quarterRange = dateInterval(of: .quarter, for: quarterBegin) else {
                     throw CalendarEnumerationError.dateOutOfRange(.quarter, quarterBegin)
                 }
-                quarterBegin = quarterRange.start - quarterRange.duration
+                quarterBegin = try startOfPrevious(.quarter, before: quarterRange.start)
                 count -= 1
             }
 
@@ -1593,7 +1619,7 @@ extension Calendar {
             }
 
             if direction == .backward {
-                let searchDate = foundRange.start - foundRange.duration
+                let searchDate = try startOfPrevious(.weekOfYear, before: foundRange.start)
                 dateWeekOfYear = component(.weekOfYear, from: searchDate)
                 result = searchDate
             } else {
@@ -1630,7 +1656,7 @@ extension Calendar {
             }
 
             if direction == .backward {
-                let searchDate = foundRange.start - foundRange.duration
+                let searchDate = try startOfPrevious(.dayOfYear, before: foundRange.start)
                 dateDayOfYear = component(.dayOfYear, from: searchDate)
                 result = searchDate
             } else {
@@ -1677,23 +1703,7 @@ extension Calendar {
                     guard let foundRange = dateInterval(of: .month, for: result) else {
                         throw CalendarEnumerationError.dateOutOfRange(.month, result)
                     }
-                    var duration = foundRange.duration
-
-                    if direction == .backward {
-                        let numMonth = component(.month, from: foundRange.start)
-                        if numMonth == 3 && (self.identifier == .gregorian || self.identifier == .buddhist || self.identifier == .japanese || self.identifier == .iso8601 || self.identifier == .republicOfChina) {
-                            // Take it back 3 days so we land in february.  That is, March has 31 days, and Feb can have 28 or 29, so to ensure we get to either Feb 1 or 2, we need to take it back 3 days.
-                            duration -= 86400 * 3
-                        } else {
-                            // Take it back a day
-                            duration -= 86400
-                        }
-
-                        // So we can go backwards in time
-                        duration *= -1
-                    }
-
-                    let searchDate = foundRange.start + duration
+                    let searchDate = direction == .backward ? try startOfPrevious(.month, before: foundRange.start) : foundRange.start + foundRange.duration
                     dateMonth = component(.month, from: searchDate)
                     result = searchDate
 
@@ -1715,21 +1725,7 @@ extension Calendar {
                     guard let leapMonthInterval = dateInterval(of: .month, for: searchDate) else {
                         throw CalendarEnumerationError.dateOutOfRange(.month, searchDate)
                     }
-                    var duration = leapMonthInterval.duration
-                    if direction == .backward {
-                        // Months in the Chinese calendar can be either 29 days ("short month") or 30 days ("long month").  We need to account for this when moving backwards in time so we don't end up accidentally skipping months.  If leapMonthBegin is 30 days long, we need to subtract from that 30 so we don't potentially skip over the previous short month.
-                        // Also note that some days aren't exactly 24hrs long, so we can end up with lengthOfMonth being something like 29.958333333332, for example.  This is a (albeit hacky) way of getting around that.
-                        let lengthOfMonth = duration / 86400
-                        if lengthOfMonth > 30 {
-                            duration -= 86400 * 2
-                        } else if lengthOfMonth > 28 {
-                            duration -= 86400
-                        }
-
-                        duration *= -1
-                    }
-
-                    let possibleLeapMonth = leapMonthInterval.start + duration
+                    let possibleLeapMonth = direction == .backward ? try startOfPrevious(.month, before: leapMonthInterval.start) : leapMonthInterval.start + leapMonthInterval.duration
                     // Note: setting month also tells Calendar to set leapMonth at the same time
                     let monthComps = _dateComponents(.month, from: possibleLeapMonth)
                     let dateMonth = monthComps.month ?? Int.max
@@ -1866,26 +1862,31 @@ extension Calendar {
         // After this point, result is at least startDate
         var result = startingAt
 
-        repeat {
-            let lastResult = result
-            
-            // Future improvement: Consider jumping ahead by week here instead of day
-            guard let foundRange = dateInterval(of: .weekdayOrdinal, for: result) else {
-                throw CalendarEnumerationError.dateOutOfRange(.weekdayOrdinal, result)
-            }
+        // Moves `result` one day at a time in the search direction until it reaches a day with the requested weekday ordinal.
+        func advanceToWeekdayOrdinal() throws {
+            repeat {
+                let lastResult = result
 
-            if direction == .backward {
-                let searchDate = foundRange.start - foundRange.duration
-                dateWeekdayOrdinal = component(.weekdayOrdinal, from: searchDate)
-                result = searchDate
-            } else {
-                let searchDate = foundRange.start + foundRange.duration
-                dateWeekdayOrdinal = component(.weekdayOrdinal, from: searchDate)
-                result = searchDate
-            }
-            
-            try verifyAdvancingResult(result, previous: lastResult, direction: direction)
-        } while weekdayOrdinal != dateWeekdayOrdinal
+                // Future improvement: Consider jumping ahead by week here instead of day
+                guard let foundRange = dateInterval(of: .weekdayOrdinal, for: result) else {
+                    throw CalendarEnumerationError.dateOutOfRange(.weekdayOrdinal, result)
+                }
+
+                if direction == .backward {
+                    let searchDate = try startOfPrevious(.weekdayOrdinal, before: foundRange.start)
+                    dateWeekdayOrdinal = component(.weekdayOrdinal, from: searchDate)
+                    result = searchDate
+                } else {
+                    let searchDate = foundRange.start + foundRange.duration
+                    dateWeekdayOrdinal = component(.weekdayOrdinal, from: searchDate)
+                    result = searchDate
+                }
+
+                try verifyAdvancingResult(result, previous: lastResult, direction: direction)
+            } while weekdayOrdinal != dateWeekdayOrdinal
+        }
+
+        try advanceToWeekdayOrdinal()
 
         // NOTE: In order for an ordinal weekday to not be ambiguous, it needs both
         //  - the ordinality (e.g. 1st)
@@ -1904,54 +1905,43 @@ extension Calendar {
             return result
         }
 
-        // Start result over (it is reset in all paths below)
+        // Weekday ordinals split a month into groups of seven days (1–7, 8–14, and so on). Search forward from the first day of the group in both directions, so the search stays in the group.
+        // The last group of a month has fewer than seven days, so it may not have the weekday. Then continue to the next group with this ordinal in the search direction.
+        while true {
+            // `dateInterval(of: .weekdayOrdinal)` returns only one day, so compute the group's first day from the day of the month.
+            guard let runStart = date(byAdding: .day, value: -((component(.day, from: result) - 1) % 7), to: startOfDay(for: result)) else {
+                throw CalendarEnumerationError.dateOutOfRange(.weekdayOrdinal, result)
+            }
+            result = runStart
+            dateWeekday = component(.weekday, from: result)
+            dateWeekdayOrdinal = weekdayOrdinal
 
-        if dateWeekday > weekday {
-            // We're past the weekday we want. Go to the beginning of the week
-            // We use startDate again here, not result
+            while weekday != dateWeekday && weekdayOrdinal == dateWeekdayOrdinal {
+                let lastResult = result
 
-            if let foundRange = dateInterval(of: .weekdayOrdinal, for: startingAt) {
-                result = foundRange.start
-                let startingDayWeekdayComps = _dateComponents(.init(.weekday, .weekdayOrdinal), from: result)
-
-                guard let wd = startingDayWeekdayComps.weekday, let wdO = startingDayWeekdayComps.weekdayOrdinal else {
-                    // This should not be possible
-                    throw CalendarEnumerationError.unexpectedResult(.weekdayOrdinal, result)
+                guard let foundRange = dateInterval(of: .day, for: result) else {
+                    throw CalendarEnumerationError.unexpectedResult(.day, result)
                 }
-                dateWeekday = wd
-                dateWeekdayOrdinal = wdO
+
+                // Always move forward inside the group, also when searching backward.
+                result = foundRange.start + foundRange.duration
+                try verifyAdvancingResult(result, previous: lastResult, direction: .forward)
+                dateWeekday = component(.weekday, from: result)
+                dateWeekdayOrdinal = component(.weekdayOrdinal, from: result)
+            }
+
+            if weekday == dateWeekday && weekdayOrdinal == dateWeekdayOrdinal {
+                return result
+            }
+
+            // This group doesn't have the weekday. Continue to the next group in the search direction.
+            if direction == .backward {
+                result = runStart
             } else {
-                // We need to have a value here - use the start date
-                result = startingAt
+                result = result - 1
             }
-        } else {
-            result = startingAt
+            try advanceToWeekdayOrdinal()
         }
-
-        while (weekday != dateWeekday) || (weekdayOrdinal != dateWeekdayOrdinal) {
-            // Now iterate through each day of the week until we find the specific weekday we're looking for.
-            let lastResult = result
-            
-            guard let foundRange = dateInterval(of: .day, for: result) else {
-                throw CalendarEnumerationError.unexpectedResult(.day, result)
-            }
-            
-            let nextDay = foundRange.start + foundRange.duration
-            let nextDayComponents = _dateComponents(.init(.weekday, .weekdayOrdinal), from: nextDay)
-            
-            guard let wd = nextDayComponents.weekday, let wdO = nextDayComponents.weekdayOrdinal else {
-                // This should not be possible
-                throw CalendarEnumerationError.unexpectedResult(.weekday, nextDay)
-            }
-            
-            dateWeekday = wd
-            dateWeekdayOrdinal = wdO
-            result = nextDay
-            
-            try verifyAdvancingResult(result, previous: lastResult, direction: direction)
-        }
-
-        return result
     }
 
     internal func dateAfterMatchingWeekday(startingAt: Date, components: DateComponents, direction: SearchDirection) throws -> Date? {
@@ -1993,15 +1983,7 @@ extension Calendar {
             // We need to account for DST by ensuring we rewind to exactly the time we want.
             let tempSearchDate: Date
             if direction == .backward {
-                let lateYesterday = foundRange.start - 1
-
-                if let anotherFoundRange = dateInterval(of: .day, for: lateYesterday) {
-                    tempSearchDate = anotherFoundRange.start
-                } else {
-                    // This fallback is only really correct when today and yesterday have the same length.
-                    // Again, it shouldn't be possible to hit this case.
-                    tempSearchDate = foundRange.start - foundRange.duration
-                }
+                tempSearchDate = try startOfPrevious(.day, before: foundRange.start)
 
             } else {
                 // This is always correct to do since we are using today's length on today — there can't be a mismatch.
@@ -2086,18 +2068,7 @@ extension Calendar {
                 let tempSearchDate: Date
 
                 if direction == .backward {
-                    // Any time prior to dayBegin is yesterday. Since we want to rewind to the start of yesterday, do that directly.
-                    let lateYesterday = foundRange.start - 1
-
-                    // Now we can get the exact moment that yesterday began on.
-                    // It shouldn't be possible to fail to find this interval, but if that somehow happens, we can try to fall back to the simple but wrong method.
-                    if let yesterdayRange = dateInterval(of: .day, for: lateYesterday) {
-                        tempSearchDate = yesterdayRange.start
-                    } else {
-                        // This fallback is only really correct when today and yesterday have the same length.
-                        // Again, it shouldn't be possible to hit this case.
-                        tempSearchDate = foundRange.start - foundRange.duration
-                    }
+                    tempSearchDate = try startOfPrevious(.day, before: foundRange.start)
                 } else {
                     // This is always correct to do since we are using today's length on today -- there can't be a mismatch.
                     tempSearchDate = foundRange.start + foundRange.duration
