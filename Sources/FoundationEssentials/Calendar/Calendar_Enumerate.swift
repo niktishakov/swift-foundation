@@ -461,6 +461,7 @@ extension Calendar {
         let backward = direction == .backward
         // The nanosecond is added to the start of the smallest unit that is found.
         let nanosecond = TimeInterval(comps.nanosecond ?? 0) / 1_000_000_000
+        // How far a search looks before it gives up, and how many pieces it looks at, so that components that never match, such as February 30, end the search.
         let span: TimeInterval = 400 * 366 * 86400
         let outer = backward ? DateInterval(start: bound - span, end: bound) : DateInterval(start: bound, end: bound + span)
         var budget = 50_000
@@ -571,7 +572,7 @@ extension Calendar {
                 }
                 previous = (current, key(current.start))
                 t = backward ? current.start - 0.001 : current.end
-                // An hour, a minute or a second can jump straight to the wanted value instead of stepping through every piece. A daylight saving time change can make the jump miss; then the search keeps stepping, which also finds gaps.
+                // A month, an hour, a minute or a second can jump straight to the wanted value instead of stepping through every piece. A daylight saving time change can make the jump miss; then the search keeps stepping, which also finds gaps.
                 if let period = periods[unit], checks == [unit], comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end, let current = previous {
                     let value = component(unit, from: t)
                     // Don't jump over a gap right after this piece: the step finds it.
