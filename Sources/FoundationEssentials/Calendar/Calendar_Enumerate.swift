@@ -381,8 +381,9 @@ extension Calendar {
             if [.minute, .second].contains(unit), checks == [unit], index > 0, levels[index - 1].0 == (unit == .minute ? .hour : .minute), let wanted = comps.value(for: unit), let parent = dateInterval(of: levels[index - 1].0, for: window.start) {
                 let length: TimeInterval = unit == .minute ? 60 : 1
                 let start = parent.start + Double(wanted) * length
-                guard window.start <= start, start < window.end else { return nil }
-                return search(DateInterval(start: start, end: min(start + length, window.end)), index + 1)
+                // The search can start inside the wanted minute or second.
+                guard window.start < start + length, start < window.end else { return nil }
+                return search(DateInterval(start: max(start, window.start), end: min(start + length, window.end)), index + 1)
             }
 
             func piece(at t: Date) -> DateInterval? {
