@@ -1154,7 +1154,7 @@ private let searchCases: [SearchCase] = [
         SearchCase(.ethiopicAmeteMihret, DateComponents(month: 13, day: 1), .nextTime, .backward, expected: (2026, 9, 6, 0)),
         SearchCase(.ethiopicAmeteMihret, DateComponents(day: 30), .strict, .forward, expected: (2026, 10, 10, 0)),
         SearchCase(.ethiopicAmeteAlem, DateComponents(month: 13, day: 1), .strict, .forward, expected: (2027, 9, 6, 0)),
-        SearchCase(.ethiopicAmeteAlem, DateComponents(day: 30), .strict, .backward, expected: nil),
+        SearchCase(.ethiopicAmeteAlem, DateComponents(day: 30), .strict, .backward, expected: (2026, 9, 5, 0)),
         SearchCase(.ethiopicAmeteAlem, DateComponents(day: 30), .nextTime, .forward, expected: (2026, 10, 10, 0)),
         SearchCase(.persian, DateComponents(month: 12, day: 1), .strict, .forward, expected: (2027, 2, 20, 0)),
         SearchCase(.persian, DateComponents(month: 12, day: 1), .nextTime, .forward, expected: (2027, 2, 20, 0)),
