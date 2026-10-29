@@ -499,8 +499,8 @@ extension Calendar {
                 }
                 return true
             }
-            // A value that time skips over makes sense only for the single value of a time unit, a day number or a leap month.
-            let gapComponent: Calendar.Component? = checks.count == 1 && [.month, .day, .hour, .minute, .second].contains(checks[0]) ? checks[0] : nil
+            // A value that time skips over makes sense only for the single value of a time unit, a day number or a leap month. A month number that a year doesn't have is searched for in other years.
+            let gapComponent: Calendar.Component? = checks.count == 1 && [.day, .hour, .minute, .second].contains(checks[0]) || (checks == [.month] && comps.isLeapMonth == true) ? checks[0] : nil
             // Months are ordered with a leap month right after the month it repeats.
             func key(_ date: Date) -> Int {
                 guard gapComponent == .month else { return component(gapComponent ?? unit, from: date) }
