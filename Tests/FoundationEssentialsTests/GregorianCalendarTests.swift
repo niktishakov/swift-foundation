@@ -226,6 +226,7 @@ private struct GregorianCalendarTests {
         (DateComponents(month: 5), Date(timeIntervalSince1970: 1635163200), .backward, Date(timeIntervalSince1970: 1619827200)), // from 2021-10-25T12:00:00Z, expected 2021-05-01T00:00:00Z
         (DateComponents(month: 2, weekday: 6, weekdayOrdinal: 1), Date(timeIntervalSince1970: 1802044800), .backward, Date(timeIntervalSince1970: 1801785600)), // from 2027-02-08T00:00:00Z, expected 2027-02-05T00:00:00Z
         (DateComponents(hour: 7, minute: 39, second: 55), Date(timeIntervalSince1970: 1793259547), .forward, Date(timeIntervalSince1970: 1793259595)), // from 2026-10-29T07:39:07Z, expected 2026-10-29T07:39:55Z
+        (DateComponents(hour: 19, minute: 30, nanosecond: 500_000_000), Date(timeIntervalSince1970: 1737487856), .forward, Date(timeIntervalSince1970: 1737574200.5)), // from 2025-01-21T19:30:56Z, expected 2025-01-22T19:30:00.5Z
     ] as [(DateComponents, Date, Calendar.SearchDirection, Date)])
     func testNextDateFindsNearestMatch(components: DateComponents, start: Date, direction: Calendar.SearchDirection, expected: Date) {
         var calendar = Calendar(identifier: .gregorian)

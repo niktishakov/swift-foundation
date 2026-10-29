@@ -356,10 +356,10 @@ extension Calendar {
             backward ? date < bound : date > bound
         }
 
-        // The time of day below `unit` for a date next to a gap: the components that are set, else the ones of the start date.
+        // The time of day below `unit` for a date next to a gap: the components that are set, else the ones of the start date, and the nanosecond.
         func withSmallerComponents(_ date: Date, below unit: Calendar.Component) -> Date? {
             let units: [Calendar.Component] = [.day, .hour, .minute, .second]
-            guard let first = units.firstIndex(where: { _isSmaller($0, than: unit) }) else { return date }
+            guard let first = units.firstIndex(where: { _isSmaller($0, than: unit) }) else { return date + nanosecond }
             var result = date
             for u in units[first...] {
                 let value = comps.value(for: u) ?? component(u, from: originalStart)
@@ -367,12 +367,14 @@ extension Calendar {
                 guard let moved = self.date(byAdding: u, value: value - current, to: result) else { return nil }
                 result = moved
             }
-            return result
+            return result + nanosecond
         }
 
         func search(_ window: DateInterval, _ index: Int) -> (Date, Bool)? {
             guard index < levels.count else {
-                let match = window.start + nanosecond
+                // A piece that the bound cuts starts at the bound, not at the start of its unit.
+                let start = !backward && window.start == bound ? dateInterval(of: levels[index - 1].0, for: bound)?.start ?? bound : window.start
+                let match = start + nanosecond
                 return match < window.end && isBeyondBound(match) ? (match, true) : nil
             }
             let (unit, checks) = levels[index]
