@@ -384,8 +384,7 @@ extension Calendar {
                 whole = DateInterval(start: max(whole.start, parent.start), end: min(whole.end, parent.end))
             }
             // Searching forward, the other policy keeps the same occurrence of a repeated time as searching backward.
-            let forwardPolicy: RepeatedTimePolicy = backward ? (repeatedTimePolicy == .first ? .last : .first) : repeatedTimePolicy
-            guard let first = _nearestMatch(after: whole.start - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: forwardPolicy, originalStart: originalStart, before: min(whole.end, limit ?? whole.end), firstInEachPiece: false), isBeyondBound(first.0) else { return nil }
+            guard let first = _nearestMatch(after: whole.start - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: backward ? (repeatedTimePolicy == .first ? .last : .first) : repeatedTimePolicy, originalStart: originalStart, before: min(whole.end, limit ?? whole.end), firstInEachPiece: false), isBeyondBound(first.0) else { return nil }
             return first
         }
 
@@ -443,7 +442,7 @@ extension Calendar {
                 }
             }
             let wanted: Int? = gapComponent == .month ? comps.month.map { $0 * 2 + (comps.isLeapMonth == true ? 1 : 0) } : gapComponent.flatMap { comps.value(for: $0) }
-            // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top, as before. Inside a quarter or a year, a later month can have the day.
+            // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top. Inside a quarter or a year, a later month can have the day.
             let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].0 == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
 
             var t = backward ? window.end - 0.001 : window.start

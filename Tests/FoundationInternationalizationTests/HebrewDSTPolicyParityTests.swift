@@ -171,9 +171,9 @@ private struct HebrewDSTPolicyParityTests {
         (Date(timeIntervalSince1970: 1837594800), Calendar.SearchDirection.forward, Date(timeIntervalSince1970: 1837645200)), // from 2028-03-25T12:00:00+01:00, expected 2028-03-26T03:00:00+02:00
         (Date(timeIntervalSince1970: 1837645200), .backward, Date(timeIntervalSince1970: 1837560360)), // from 2028-03-26T03:00:00+02:00, expected 2028-03-25T02:26:00+01:00
     ] as [(Date, Calendar.SearchDirection, Date)])
-    func nextDate_skippedTime_isEndOfGap(start: Date, direction: Calendar.SearchDirection, expected: Date) {
+    func nextDate_skippedTime_isEndOfGap(start: Date, direction: Calendar.SearchDirection, expected: Date) throws {
         var calendar = Calendar(identifier: .hebrew)
-        calendar.timeZone = TimeZone(identifier: "Europe/Paris")!
+        calendar.timeZone = try #require(TimeZone(identifier: "Europe/Paris"))
         #expect(calendar.nextDate(after: start, matching: DateComponents(hour: 2, minute: 26, second: 0), matchingPolicy: .nextTime, direction: direction) == expected)
     }
 }

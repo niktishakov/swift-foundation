@@ -1088,7 +1088,7 @@ extension Calendar {
 
         if let weekdays = combinationComponents.weekdays {
             dates = dates.flatMap { date, comps in
-                _weekdayComponents(for: weekdays, in: .month, anchor: date)!.map { weekdayComps in
+                (_weekdayComponents(for: weekdays, in: .month, anchor: date) ?? []).map { weekdayComps in
                     var comps = comps
                     comps.weekOfMonth = weekdayComps.weekOfMonth
                     comps.weekday = weekdayComps.weekday

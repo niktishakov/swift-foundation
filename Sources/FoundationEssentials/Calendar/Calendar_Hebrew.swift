@@ -978,8 +978,7 @@ internal final class _CalendarHebrew: _CalendarProtocol, @unchecked Sendable {
         guard let result = nextWallTime(after: date, matching: components, direction: direction) else { return nil }
         // A time that a daylight saving time change skips, such as 2:30 when clocks go from 2:00 to 3:00, is built with the offset before the change and lands after the gap, at 3:30. The fast path is used with `.nextTime`, which asks for the first time after the gap, 3:00.
         let tz = self.timeZone
-        let wall = Self.rataDieAndSecondsInDay(localSeconds: result.timeIntervalSinceReferenceDate + Double(tz.secondsFromGMT(for: result))).secondsInDay
-        let shift = (wall - Self.secondsInDay(from: components)).truncatingRemainder(dividingBy: 86400)
+        let shift = (Self.rataDieAndSecondsInDay(localSeconds: result.timeIntervalSinceReferenceDate + Double(tz.secondsFromGMT(for: result))).secondsInDay - Self.secondsInDay(from: components)).truncatingRemainder(dividingBy: 86400)
         guard abs(shift) > 0.001, let gapEnd = tz.nextDaylightSavingTimeTransition(after: result - (shift < 0 ? shift + 86400 : shift)) else { return result }
         // Searching backward from the end of the gap, the match is on an earlier day.
         if direction == .backward && gapEnd >= date {

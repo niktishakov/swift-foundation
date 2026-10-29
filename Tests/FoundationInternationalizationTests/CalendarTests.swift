@@ -723,9 +723,9 @@ private struct CalendarTests {
         (DateComponents(day: 8, hour: 0, minute: 0, second: 0), .forward, Date(timeIntervalSince1970: 1725760800), Date(timeIntervalSince1970: 1725768000)), // from 2024-09-07T22:00:00-04:00, expected 2024-09-08T01:00:00-03:00
         (DateComponents(hour: 0, minute: 0, second: 0), .backward, Date(timeIntervalSince1970: 1725769800), Date(timeIntervalSince1970: 1725768000)), // from 2024-09-08T01:30:00-03:00, expected 2024-09-08T01:00:00-03:00
     ] as [(DateComponents, Calendar.SearchDirection, Date, Date)])
-    func nextDateSkippedMidnight(components: DateComponents, direction: Calendar.SearchDirection, start: Date, expected: Date) {
+    func nextDateSkippedMidnight(components: DateComponents, direction: Calendar.SearchDirection, start: Date, expected: Date) throws {
         var c = Calendar(identifier: .gregorian)
-        c.timeZone = TimeZone(identifier: "America/Santiago")!
+        c.timeZone = try #require(TimeZone(identifier: "America/Santiago"))
         #expect(c.nextDate(after: start, matching: components, matchingPolicy: .nextTime, direction: direction) == expected)
     }
 
