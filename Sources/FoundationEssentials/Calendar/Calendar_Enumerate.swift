@@ -374,6 +374,10 @@ extension Calendar {
 
         // The first match of the whole piece around `current`, which a search backward finds too. The bound can cut the piece, so the match counts only when it is beyond the bound.
         func firstMatch(in current: DateInterval, _ index: Int) -> (Date, Bool)? {
+            // When the bound itself matches, as a previous match of an enumeration does, the first match of its piece is not after it.
+            if !backward, comps.nanosecond == nil, comps.isLeapMonth == nil, levels.allSatisfy({ $0.1.allSatisfy { component($0, from: bound) == comps.value(for: $0) } }) {
+                return nil
+            }
             guard var whole = dateInterval(of: levels[index].0, for: current.start) else { return nil }
             // A week is cut by its month when the month is searched too.
             if index > 0, let parent = dateInterval(of: levels[index - 1].0, for: current.start) {
