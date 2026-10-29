@@ -216,26 +216,12 @@ extension Calendar {
             
             mutating func next() -> Element? {
                 guard !finished else { return nil }
-                
-                if usesFastPath {
-                    guard let next = calendar._calendarNextDate(after: searchingDate, matching: matchingComponents, direction: direction) else {
-                        finished = true
-                        return nil
-                    }
-                    if let range, !range.contains(next) {
-                        finished = true
-                        return nil
-                    }
-                    searchingDate = next
-                    return next
-                }
 
-                guard let (match, _) = calendar._nearestMatch(after: searchingDate, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
-                    _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
-                    finished = true
-                    return nil
-                }
-                if let range, !range.contains(match) {
+                let match = usesFastPath ? calendar._calendarNextDate(after: searchingDate, matching: matchingComponents, direction: direction) : calendar._nearestMatch(after: searchingDate, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start)?.0
+                guard let match, range?.contains(match) ?? true else {
+                    if match == nil && !usesFastPath {
+                        _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
+                    }
                     finished = true
                     return nil
                 }
@@ -351,7 +337,6 @@ extension Calendar {
         let nanosecond = TimeInterval(comps.nanosecond ?? 0) / 1_000_000_000
         // How far a search looks before it gives up, and how many pieces it looks at, so that components that never match, such as February 30, end the search.
         let span: TimeInterval = 400 * 366 * 86400
-        let outer = backward ? DateInterval(start: bound - span, end: bound) : DateInterval(start: bound, end: max(bound, min(bound + span, limit ?? .distantFuture)))
         var budget = 50_000
 
         func isBeyondBound(_ date: Date) -> Bool {
@@ -361,9 +346,8 @@ extension Calendar {
         // The time of day below `unit` for a date next to a gap: the components that are set, else the ones of the start date, and the nanosecond.
         func withSmallerComponents(_ date: Date, below unit: Calendar.Component) -> Date? {
             let units: [Calendar.Component] = [.day, .hour, .minute, .second]
-            guard let first = units.firstIndex(where: { _isSmaller($0, than: unit) }) else { return date + nanosecond }
             var result = date
-            for u in units[first...] {
+            for u in units[(units.firstIndex(of: unit).map { $0 + 1 } ?? 0)...] {
                 let value = comps.value(for: u) ?? component(u, from: originalStart)
                 let current = component(u, from: result)
                 guard let moved = self.date(byAdding: u, value: value - current, to: result) else { return nil }
@@ -398,8 +382,7 @@ extension Calendar {
             let (unit, checks) = levels[index]
 
             // Every hour has the same minutes and every minute the same seconds, so the piece is found directly.
-            if [.minute, .second].contains(unit), checks == [unit], index > 0, levels[index - 1].0 == (unit == .minute ? .hour : .minute), let wanted = comps.value(for: unit), let parent = dateInterval(of: levels[index - 1].0, for: window.start) {
-                let length: TimeInterval = unit == .minute ? 60 : 1
+            if unit == .minute || unit == .second, let wanted = comps.value(for: unit), let length = fixedLength(unit), let parent = dateInterval(of: levels[index - 1].0, for: window.start) {
                 let start = parent.start + Double(wanted) * length
                 // The search can start inside the wanted minute or second.
                 guard window.start < start + length, start < window.end else { return nil }
@@ -423,10 +406,13 @@ extension Calendar {
             // A value that time skips over makes sense only for the single value of a time unit, a day number or a leap month. A month number that a year doesn't have is searched for in other years.
             let gapComponent: Calendar.Component? = checks.count == 1 && [.day, .hour, .minute, .second].contains(checks[0]) || (checks == [.month] && comps.isLeapMonth == true) ? checks[0] : nil
             // Months are ordered with a leap month right after the month it repeats.
+            func monthKey(_ month: Int, isLeap: Bool?) -> Int {
+                month * 2 + (isLeap == true ? 1 : 0)
+            }
             func key(_ date: Date) -> Int {
                 guard gapComponent == .month else { return component(gapComponent ?? unit, from: date) }
                 let month = _dateComponents(.month, from: date)
-                return (month.month ?? 0) * 2 + (month.isLeapMonth == true ? 1 : 0)
+                return monthKey(month.month ?? 0, isLeap: month.isLeapMonth)
             }
             // The date next to a gap, picked by the matching policy. `before` is the piece before the gap in time, `after` is where time continues after it.
             func nearGap(before: DateInterval, after: Date) -> Date? {
@@ -441,10 +427,11 @@ extension Calendar {
                     return nil
                 }
             }
-            let wanted: Int? = gapComponent == .month ? comps.month.map { $0 * 2 + (comps.isLeapMonth == true ? 1 : 0) } : gapComponent.flatMap { comps.value(for: $0) }
+            let wanted: Int? = gapComponent == .month ? comps.month.map { monthKey($0, isLeap: comps.isLeapMonth) } : gapComponent.flatMap { comps.value(for: $0) }
             // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top. Inside a quarter or a year, a later month can have the day.
             let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].0 == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
 
+            let isTimeUnit = unit == .hour || unit == .minute || unit == .second
             var t = backward ? window.end - 0.001 : window.start
             var previous: (piece: DateInterval, value: Int)?
             // A day can start after midnight when the clock skips it, so an hour is compared with the last hour of the day before too.
@@ -462,7 +449,7 @@ extension Calendar {
                 if matches(current) {
                     // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
                     var isSkippedRepeat = false
-                    if [.hour, .minute, .second].contains(unit), !checks.isEmpty {
+                    if isTimeUnit, !checks.isEmpty {
                         let neighborTime = (repeatedTimePolicy == .first) == backward ? current.end : current.start - 0.001
                         // The neighbor is another piece of the unit, not the rest of this one cut by the bound.
                         if let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime), neighbor.start != own.start, fits(neighbor.start) {
@@ -494,17 +481,18 @@ extension Calendar {
                         return (candidate, false)
                     }
                 }
-                previous = gapComponent != nil || periods(unit) != nil ? (current, key(current.start)) : nil
+                previous = gapComponent != nil ? (current, key(current.start)) : nil
                 t = backward ? current.start - 0.001 : current.end
                 // A month, an hour, a minute or a second can jump straight to the wanted value instead of stepping through every piece. A daylight saving time change can make the jump miss; then the search keeps stepping, which also finds gaps.
-                if let period = periods(unit), checks == [unit], comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end, let current = previous {
+                if let period = periods(unit), comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end {
                     let value = component(unit, from: t)
-                    let currentValue = component(unit, from: current.piece.start)
+                    let currentValue = component(unit, from: current.start)
                     // Don't jump over a gap right after this piece: the step finds it.
                     let skipsGap = backward ? isSkipped(wanted, between: value, and: currentValue) : isSkipped(wanted, between: currentValue, and: value)
                     let steps = backward ? (value - wanted + period) % period : (wanted - value + period) % period
                     if !skipsGap, steps > 0 {
-                        let jumped: Date? = if let length = fixedLength(unit) { backward ? t - Double(steps) * length : t + Double(steps) * length } else { date(byAdding: unit, value: backward ? -steps : steps, to: t) }
+                        let delta = backward ? -steps : steps
+                        let jumped: Date? = if let length = fixedLength(unit) { t + Double(delta) * length } else { date(byAdding: unit, value: delta, to: t) }
                         if let jumped, window.start <= jumped, jumped < window.end, component(unit, from: jumped) == wanted {
                             t = jumped
                             previous = nil
@@ -518,7 +506,7 @@ extension Calendar {
             }
             return nil
         }
-        return search(outer, 0)
+        return search(backward ? DateInterval(start: bound - span, end: bound) : DateInterval(start: bound, end: max(bound, min(bound + span, limit ?? .distantFuture))), 0)
     }
 
     /// How many values a unit that the search can jump through has.
@@ -539,12 +527,6 @@ extension Calendar {
         case .second: 1
         default: nil
         }
-    }
-
-    private func _isSmaller(_ a: Calendar.Component, than b: Calendar.Component) -> Bool {
-        let order: [Calendar.Component] = [.era, .year, .yearForWeekOfYear, .quarter, .month, .weekOfYear, .weekOfMonth, .day, .hour, .minute, .second, .nanosecond]
-        guard let ia = order.firstIndex(of: a), let ib = order.firstIndex(of: b) else { return false }
-        return ia > ib
     }
 
     internal func _enumerateDates(startingAfter start: Date,

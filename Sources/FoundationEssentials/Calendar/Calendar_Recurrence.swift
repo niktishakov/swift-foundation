@@ -449,7 +449,7 @@ extension Calendar {
                 // of expansions is fixed, and must stay exactly as it is so we
                 // conform to RFC5545
 
-                dates = try! calendar._dates(startingAfter: searchStart, matching: componentCombinations, in: searchRange, matchingPolicy: recurrence.matchingPolicy, repeatedTimePolicy: recurrence.repeatedTimePolicy)
+                dates = calendar._dates(startingAfter: searchStart, matching: componentCombinations, in: searchRange, matchingPolicy: recurrence.matchingPolicy, repeatedTimePolicy: recurrence.repeatedTimePolicy)
                  
                 if monthAction == .limit {
                     recurrence._limitMonths(dates: &dates, anchor: anchor)
@@ -871,16 +871,15 @@ extension Calendar {
         return true
     }
 
-    /// Probe all expanded DateComponents via the fast path. Returns sorted results or nil if any DC isn't fast-pathable.
-    private func _probeAllFastPath(_ allDCs: [DateComponents], after startDate: Date) -> [(Date, DateComponents)]? {
+    /// Probe all expanded DateComponents via the fast path. Returns nil if any DC isn't fast-pathable.
+    private func _probeAllFastPath(_ allDCs: [DateComponents], after startDate: Date) -> [Date]? {
         guard allDCs.allSatisfy({ _supportsNextDateFastPath(for: $0._populatedComponentSet) }) else { return nil }
-        var results: [(Date, DateComponents)] = []
+        var results: [Date] = []
         results.reserveCapacity(allDCs.count)
         for dc in allDCs {
             guard let fast = _calendarNextDate(after: startDate, matching: dc, direction: .forward) else { return nil }
-            results.append((fast, dc))
+            results.append(fast)
         }
-        results.sort { $0.0 < $1.0 }
         return results
     }
 
@@ -1133,7 +1132,7 @@ extension Calendar {
                          matching matchingComponents: _DateComponentCombinations,
                          in range: Range<Date>,
                          matchingPolicy: MatchingPolicy,
-                         repeatedTimePolicy: RepeatedTimePolicy) throws -> [Date] {
+                         repeatedTimePolicy: RepeatedTimePolicy) -> [Date] {
       
         guard start.isValidForEnumeration else { return [] }
 
@@ -1141,21 +1140,11 @@ extension Calendar {
         if matchingPolicy == .nextTime && repeatedTimePolicy == .first,
            let allDCs = _fastPathDateComponents(matchingComponents, anchor: start),
            let results = _probeAllFastPath(allDCs, after: start) {
-            return results.map(\.0).filter { range.contains($0) }
+            return results.filter { range.contains($0) }
         }
 
-        let results = _componentsCombinations(after: start, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy).map { components in
-            _nearestMatch(after: start - 0.001, direction: .forward, matching: components, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start, before: range.upperBound, firstInEachPiece: false)
-        }
-
-        var foundDates: [Date] = []
-        for result in results {
-            if let (matchDate, _) = result {
-                if range.contains(matchDate) {
-                    foundDates.append(matchDate)
-                }
-            }
-        }
-        return foundDates
+        return _componentsCombinations(after: start, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy).compactMap { components in
+            _nearestMatch(after: start - 0.001, direction: .forward, matching: components, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start, before: range.upperBound, firstInEachPiece: false)?.0
+        }.filter { range.contains($0) }
     }
 }
