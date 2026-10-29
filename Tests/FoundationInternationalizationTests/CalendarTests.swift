@@ -717,6 +717,18 @@ private struct CalendarTests {
         #expect(!c.date(d, matchesComponents: DateComponents(month: 7, day: 31)))
     }
     
+    // In Santiago the clock goes from 00:00 to 01:00 on 2024-09-08, so that day starts at 01:00.
+    @Test(arguments: [
+        (DateComponents(hour: 0, minute: 0, second: 0), Calendar.SearchDirection.forward, Date(timeIntervalSince1970: 1725760800), Date(timeIntervalSince1970: 1725768000)), // from 2024-09-07T22:00:00-04:00, expected 2024-09-08T01:00:00-03:00
+        (DateComponents(day: 8, hour: 0, minute: 0, second: 0), .forward, Date(timeIntervalSince1970: 1725760800), Date(timeIntervalSince1970: 1725768000)), // from 2024-09-07T22:00:00-04:00, expected 2024-09-08T01:00:00-03:00
+        (DateComponents(hour: 0, minute: 0, second: 0), .backward, Date(timeIntervalSince1970: 1725769800), Date(timeIntervalSince1970: 1725768000)), // from 2024-09-08T01:30:00-03:00, expected 2024-09-08T01:00:00-03:00
+    ] as [(DateComponents, Calendar.SearchDirection, Date, Date)])
+    func nextDateSkippedMidnight(components: DateComponents, direction: Calendar.SearchDirection, start: Date, expected: Date) {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "America/Santiago")!
+        #expect(c.nextDate(after: start, matching: components, matchingPolicy: .nextTime, direction: direction) == expected)
+    }
+
     @Test func leapMonthProperty() throws {
         let c = Calendar(identifier: .chinese)
         /// 2023-02-20 08:00:00 +0000 -- non-leap month in the Chinese calendar

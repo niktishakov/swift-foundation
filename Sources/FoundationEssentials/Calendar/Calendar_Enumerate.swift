@@ -444,6 +444,15 @@ extension Calendar {
 
             var t = backward ? window.end - 0.001 : window.start
             var previous: (piece: DateInterval, value: Int)?
+            // A day can start after midnight when the clock skips it, so an hour is compared with the last hour of the day before too.
+            let hourBefore = unit == .hour && gapComponent == .hour && dateInterval(of: .day, for: window.start)?.start == window.start ? dateInterval(of: .hour, for: window.start - 0.001) : nil
+            if !backward, let hourBefore {
+                previous = (hourBefore, key(hourBefore.start))
+            }
+            // Hours wrap at midnight.
+            func isSkipped(_ wanted: Int, between earlierValue: Int, and laterValue: Int) -> Bool {
+                earlierValue < laterValue ? earlierValue < wanted && wanted < laterValue : earlierValue > laterValue && unit == .hour && (earlierValue < wanted || wanted < laterValue)
+            }
             while backward ? t >= window.start : t < window.end {
                 budget -= 1
                 guard budget > 0, let current = piece(at: t) else { return nil }
@@ -468,12 +477,15 @@ extension Calendar {
                     if let previous {
                         // The wanted value is skipped between two neighboring pieces.
                         let (earlier, later, earlierValue, laterValue) = backward ? (current, previous.piece, value, previous.value) : (previous.piece, current, previous.value, value)
-                        if earlierValue < wanted, wanted < laterValue {
+                        if isSkipped(wanted, between: earlierValue, and: laterValue) {
                             gap = (earlier, later.start)
                         }
                     } else if backward, wholeMonth, value < wanted {
                         // The month ends before the wanted day.
                         gap = (current, window.end)
+                    }
+                    if gap == nil, backward, let hourBefore, current.start == window.start, isSkipped(wanted, between: key(hourBefore.start), and: value) {
+                        gap = (hourBefore, current.start)
                     }
                     if let gap, let candidate = nearGap(before: gap.before, after: gap.after), isBeyondBound(candidate) {
                         return (candidate, false)
@@ -486,7 +498,7 @@ extension Calendar {
                     let value = component(unit, from: t)
                     let currentValue = component(unit, from: current.piece.start)
                     // Don't jump over a gap right after this piece: the step finds it.
-                    let skipsGap = backward ? (value < wanted && wanted < currentValue) : (currentValue < wanted && wanted < value)
+                    let skipsGap = backward ? isSkipped(wanted, between: value, and: currentValue) : isSkipped(wanted, between: currentValue, and: value)
                     let steps = backward ? (value - wanted + period) % period : (wanted - value + period) % period
                     if !skipsGap, steps > 0 {
                         let jumped: Date? = if let length = fixedLength(unit) { backward ? t - Double(steps) * length : t + Double(steps) * length } else { date(byAdding: unit, value: backward ? -steps : steps, to: t) }
