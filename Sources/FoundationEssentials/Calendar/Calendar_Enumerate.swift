@@ -248,20 +248,6 @@ extension DateComponents {
     }
 }
 
-private func _handleCalendarError(_ error: CalendarEnumerationError, date: Date, calendar: Calendar, comps: DateComponents, direction: Calendar.SearchDirection, matchingPolicy: Calendar.MatchingPolicy, repeatedTimePolicy: Calendar.RepeatedTimePolicy) {
-#if FOUNDATION_FRAMEWORK
-    switch error {
-    case .dateOutOfRange(let component, let test):
-        Calendar.log.error("Out of range Calendar enumeration result: start: \(date.timeIntervalSinceReferenceDate, privacy: .public) test: \(test.timeIntervalSinceReferenceDate, privacy: .public) \(component.debugDescription, privacy: .public) \(calendar, privacy: .public) \(comps, privacy: .public) \(direction.debugDescription, privacy: .public) \(matchingPolicy.debugDescription, privacy: .public) \(repeatedTimePolicy.debugDescription)")
-        
-    case .notAdvancing(let next, let previous):
-        Calendar.log.error("Not advancing Calendar enumeration result: \(date.timeIntervalSinceReferenceDate, privacy: .public) next: \(next.timeIntervalSinceReferenceDate, privacy: .public) previous: \(previous.timeIntervalSinceReferenceDate, privacy: .public) \(calendar, privacy: .public) \(comps, privacy: .public) \(direction.debugDescription, privacy: .public) \(matchingPolicy.debugDescription, privacy: .public) \(repeatedTimePolicy.debugDescription)")
-    case .unexpectedResult(let component, let test):
-        Calendar.log.error("Unexpected Calendar enumeration result: start: \(date.timeIntervalSinceReferenceDate, privacy: .public) test: \(test.timeIntervalSinceReferenceDate, privacy: .public) \(component.debugDescription, privacy: .public) \(calendar, privacy: .public) \(comps, privacy: .public) \(direction.debugDescription, privacy: .public) \(matchingPolicy.debugDescription, privacy: .public) \(repeatedTimePolicy.debugDescription)")
-    }
-#endif
-}
-
 private func _handleCalendarResultNotFound(date: Date, calendar: Calendar, comps: DateComponents, direction: Calendar.SearchDirection, matchingPolicy: Calendar.MatchingPolicy, repeatedTimePolicy: Calendar.RepeatedTimePolicy) {
 #if FOUNDATION_FRAMEWORK
     Calendar.log.debug("Unable to find Calendar enumeration result: \(date.timeIntervalSinceReferenceDate, privacy: .public) \(calendar, privacy: .public) \(comps, privacy: .public) \(direction.debugDescription, privacy: .public) \(matchingPolicy.debugDescription, privacy: .public) \(repeatedTimePolicy.debugDescription)")
@@ -503,8 +489,11 @@ extension Calendar {
                 guard let interval = dateInterval(of: unit, for: t) else { return nil }
                 return DateInterval(start: max(interval.start, window.start), end: min(interval.end, window.end))
             }
+            func fits(_ date: Date) -> Bool {
+                checks.allSatisfy { component($0, from: date) == comps.value(for: $0) }
+            }
             func matches(_ piece: DateInterval) -> Bool {
-                guard checks.allSatisfy({ component($0, from: piece.start) == comps.value(for: $0) }) else { return false }
+                guard fits(piece.start) else { return false }
                 if unit == .month, let leap = comps.isLeapMonth {
                     return _dateComponents(.month, from: piece.start).isLeapMonth == leap
                 }
@@ -532,26 +521,27 @@ extension Calendar {
                 }
             }
             let wanted: Int? = gapComponent == .month ? comps.month.map { $0 * 2 + (comps.isLeapMonth == true ? 1 : 0) } : gapComponent.flatMap { comps.value(for: $0) }
-            // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top. Inside a quarter or a year, a later month can have the day.
+            // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top, as before. Inside a quarter or a year, a later month can have the day.
             let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].0 == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
 
             var t = backward ? window.end - 0.001 : window.start
             var previous: (piece: DateInterval, value: Int)?
-            let fixedLength: [Calendar.Component: TimeInterval] = [.hour: 3600, .minute: 60, .second: 1]
-            let periods: [Calendar.Component: Int] = [.month: 12, .hour: 24, .minute: 60, .second: 60]
             while backward ? t >= window.start : t < window.end {
                 budget -= 1
                 guard budget > 0, let current = piece(at: t) else { return nil }
-                // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
-                var isSkippedRepeat = false
-                if [.hour, .minute, .second].contains(unit), !checks.isEmpty {
-                    let neighborTime = (repeatedTimePolicy == .first) == backward ? current.end : current.start - 0.001
-                    if let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime), neighbor.start != own.start, checks.allSatisfy({ component($0, from: neighbor.start) == comps.value(for: $0) }) {
-                        isSkippedRepeat = true
+                if matches(current) {
+                    // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
+                    var isSkippedRepeat = false
+                    if [.hour, .minute, .second].contains(unit), !checks.isEmpty {
+                        let neighborTime = (repeatedTimePolicy == .first) == backward ? current.end : current.start - 0.001
+                        // The neighbor is another piece of the unit, not the rest of this one cut by the bound.
+                        if let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime), neighbor.start != own.start, fits(neighbor.start) {
+                            isSkippedRepeat = true
+                        }
                     }
-                }
-                if !isSkippedRepeat, matches(current), let found = search(current, index + 1) {
-                    return found
+                    if !isSkippedRepeat, let found = search(current, index + 1) {
+                        return found
+                    }
                 }
                 if matchingPolicy != .strict, gapComponent != nil, let wanted {
                     let value = key(current.start)
@@ -570,16 +560,17 @@ extension Calendar {
                         return (candidate, false)
                     }
                 }
-                previous = (current, key(current.start))
+                previous = gapComponent != nil || periods(unit) != nil ? (current, key(current.start)) : nil
                 t = backward ? current.start - 0.001 : current.end
                 // A month, an hour, a minute or a second can jump straight to the wanted value instead of stepping through every piece. A daylight saving time change can make the jump miss; then the search keeps stepping, which also finds gaps.
-                if let period = periods[unit], checks == [unit], comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end, let current = previous {
+                if let period = periods(unit), checks == [unit], comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end, let current = previous {
                     let value = component(unit, from: t)
+                    let currentValue = component(unit, from: current.piece.start)
                     // Don't jump over a gap right after this piece: the step finds it.
-                    let skipsGap = backward ? (value < wanted && wanted < current.value) : (current.value < wanted && wanted < value)
+                    let skipsGap = backward ? (value < wanted && wanted < currentValue) : (currentValue < wanted && wanted < value)
                     let steps = backward ? (value - wanted + period) % period : (wanted - value + period) % period
                     if !skipsGap, steps > 0 {
-                        let jumped: Date? = if let length = fixedLength[unit] { backward ? t - Double(steps) * length : t + Double(steps) * length } else { date(byAdding: unit, value: backward ? -steps : steps, to: t) }
+                        let jumped: Date? = if let length = fixedLength(unit) { backward ? t - Double(steps) * length : t + Double(steps) * length } else { date(byAdding: unit, value: backward ? -steps : steps, to: t) }
                         if let jumped, window.start <= jumped, jumped < window.end, component(unit, from: jumped) == wanted {
                             t = jumped
                             previous = nil
@@ -594,6 +585,26 @@ extension Calendar {
             return nil
         }
         return search(outer, 0)
+    }
+
+    /// How many values a unit that the search can jump through has.
+    private func periods(_ unit: Calendar.Component) -> Int? {
+        switch unit {
+        case .month: 12
+        case .hour: 24
+        case .minute, .second: 60
+        default: nil
+        }
+    }
+
+    /// The length of a unit that is always the same, which a jump can add without asking the calendar.
+    private func fixedLength(_ unit: Calendar.Component) -> TimeInterval? {
+        switch unit {
+        case .hour: 3600
+        case .minute: 60
+        case .second: 1
+        default: nil
+        }
     }
 
     private func _isSmaller(_ a: Calendar.Component, than b: Calendar.Component) -> Bool {
@@ -2264,7 +2275,7 @@ extension Calendar {
                             guard let foundRange = dateInterval(of: .minute, for: result) else {
                                 throw CalendarEnumerationError.dateOutOfRange(.minute, result)
                             }
-                            
+
                             let tempSearchDate = foundRange.start - foundRange.duration
                             searchStartMin = component(.minute, from: tempSearchDate)
                             try verifyAdvancingResult(tempSearchDate, previous: result, direction: direction)
