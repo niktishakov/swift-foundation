@@ -277,31 +277,6 @@ public struct Calendar : Hashable, Equatable, Sendable {
             return result
         }
 
-        package var highestSetUnit: Calendar.Component? {
-            if self.contains(.era) { return .era }
-            if self.contains(.year) { return .year }
-            if self.contains(.dayOfYear) { return .dayOfYear }
-            if self.contains(.quarter) { return .quarter }
-            if self.contains(.month) { return .month }
-            if self.contains(.day) { return .day }
-            if self.contains(.hour) { return .hour }
-            if self.contains(.minute) { return .minute }
-            if self.contains(.second) { return .second }
-            if self.contains(.weekday) { return .weekday }
-            if self.contains(.weekdayOrdinal) { return .weekdayOrdinal }
-            if self.contains(.weekOfMonth) { return .weekOfMonth }
-            if self.contains(.weekOfYear) { return .weekOfYear }
-            if self.contains(.yearForWeekOfYear) { return .yearForWeekOfYear }
-            if self.contains(.nanosecond) { return .nanosecond }
-
-            // The algorithms that call this function assume that isLeapMonth and isRepeatedDay can count as 'highest unit set', but they are ordered after nanosecond.
-            if self.contains(.isLeapMonth) { return .isLeapMonth }
-            if self.contains(.isRepeatedDay) { return .isRepeatedDay }
-
-            // The calendar and timeZone properties do not count as a 'highest unit set', since they are not ordered in time like the others are.
-            return nil
-        }
-
         var containsOnlyTimeComponents: Bool {
             !self.contains(.era) && !self.contains(.year) && !self.contains(.dayOfYear) && !self.contains(.quarter) && !self.contains(.month) && !self.contains(.day) && !self.contains(.weekday) && !self.contains(.weekdayOrdinal) && !self.contains(.weekOfMonth) && !self.contains(.weekOfYear) && !self.contains(.yearForWeekOfYear) && !self.contains(.isLeapMonth) && !self.contains(.isRepeatedDay)
         }
