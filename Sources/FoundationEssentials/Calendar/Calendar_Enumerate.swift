@@ -341,10 +341,12 @@ extension Calendar {
     }
 
     /// The nearest date after `bound` in `direction` that matches `comps`. Each unit that is set is searched only inside the piece of the larger unit that matched, so a match can't leave a month, a week or a day that an earlier unit chose. When a value is in a gap, such as a day after the end of a short month or an hour skipped by a daylight saving time change, the matching policy picks a date next to the gap.
-    internal func _nearestMatch(after bound: Date, direction: SearchDirection, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date, before limit: Date? = nil) -> (Date, Bool)? {
+    internal func _nearestMatch(after bound: Date, direction: SearchDirection, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date, before limit: Date? = nil, firstInEachPiece: Bool = true) -> (Date, Bool)? {
         let levels = _searchLevels(for: comps)
         guard !levels.isEmpty else { return nil }
         let backward = direction == .backward
+        // Only the first match inside each piece of the largest unit that is set counts, so November and 9 o'clock match November 1 at 9:00 once a year. In the smallest unit a match is the start of the piece anyway.
+        let firstOnlyIndex = firstInEachPiece ? levels.firstIndex { !$0.1.isEmpty }.flatMap { $0 < levels.count - 1 ? $0 : nil } : nil
         // The nanosecond is added to the start of the smallest unit that is found.
         let nanosecond = TimeInterval(comps.nanosecond ?? 0) / 1_000_000_000
         // How far a search looks before it gives up, and how many pieces it looks at, so that components that never match, such as February 30, end the search.
@@ -368,6 +370,19 @@ extension Calendar {
                 result = moved
             }
             return result + nanosecond
+        }
+
+        // The first match of the whole piece around `current`, which a search backward finds too. The bound can cut the piece, so the match counts only when it is beyond the bound.
+        func firstMatch(in current: DateInterval, _ index: Int) -> (Date, Bool)? {
+            guard var whole = dateInterval(of: levels[index].0, for: current.start) else { return nil }
+            // A week is cut by its month when the month is searched too.
+            if index > 0, let parent = dateInterval(of: levels[index - 1].0, for: current.start) {
+                whole = DateInterval(start: max(whole.start, parent.start), end: min(whole.end, parent.end))
+            }
+            // Searching forward, the other policy keeps the same occurrence of a repeated time as searching backward.
+            let forwardPolicy: RepeatedTimePolicy = backward ? (repeatedTimePolicy == .first ? .last : .first) : repeatedTimePolicy
+            guard let first = _nearestMatch(after: whole.start - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: forwardPolicy, originalStart: originalStart, before: min(whole.end, limit ?? whole.end), firstInEachPiece: false), isBeyondBound(first.0) else { return nil }
+            return first
         }
 
         func search(_ window: DateInterval, _ index: Int) -> (Date, Bool)? {
@@ -442,7 +457,8 @@ extension Calendar {
                             isSkippedRepeat = true
                         }
                     }
-                    if !isSkippedRepeat, let found = search(current, index + 1) {
+                    // Searching forward, a piece that the bound doesn't cut gives its first match anyway.
+                    if !isSkippedRepeat, let found = index == firstOnlyIndex && (backward || current.start == bound) ? firstMatch(in: current, index) : search(current, index + 1) {
                         return found
                     }
                 }

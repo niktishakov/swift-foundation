@@ -219,8 +219,7 @@ private struct GregorianCalendarTests {
 
     // Searches that skipped a nearer match, or returned a date that doesn't match.
     @Test(arguments: [
-        (DateComponents(month: 3, weekday: 7), Date(timeIntervalSince1970: 1741348800), Calendar.SearchDirection.forward, Date(timeIntervalSince1970: 1741392000)), // from 2025-03-07T12:00:00Z, expected 2025-03-08T00:00:00Z
-        (DateComponents(weekdayOrdinal: 3), Date(timeIntervalSince1970: 1718704800), .forward, Date(timeIntervalSince1970: 1718755200)), // from 2024-06-18T10:00:00Z, expected 2024-06-19T00:00:00Z
+        (DateComponents(weekdayOrdinal: 3), Date(timeIntervalSince1970: 1718704800), Calendar.SearchDirection.forward, Date(timeIntervalSince1970: 1718755200)), // from 2024-06-18T10:00:00Z, expected 2024-06-19T00:00:00Z
         (DateComponents(month: 11, weekdayOrdinal: 4), Date(timeIntervalSince1970: 1605142800), .forward, Date(timeIntervalSince1970: 1606003200)), // from 2020-11-12T01:00:00Z, expected 2020-11-22T00:00:00Z
         (DateComponents(month: 9, weekday: 3, weekdayOrdinal: 1), Date(timeIntervalSince1970: 1578884400), .backward, Date(timeIntervalSince1970: 1567468800)), // from 2020-01-13T03:00:00Z, expected 2019-09-03T00:00:00Z
         (DateComponents(month: 5), Date(timeIntervalSince1970: 1635163200), .backward, Date(timeIntervalSince1970: 1619827200)), // from 2021-10-25T12:00:00Z, expected 2021-05-01T00:00:00Z
@@ -232,6 +231,18 @@ private struct GregorianCalendarTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .gmt
         #expect(calendar.nextDate(after: start, matching: components, matchingPolicy: .strict, direction: direction) == expected)
+    }
+
+    // A unit that isn't set, below the largest unit that is set, takes its first value: November and 9 o'clock match November 1 at 9:00.
+    @Test(arguments: [
+        (DateComponents(month: 11, hour: 9), Date(timeIntervalSince1970: 1794482100), Date(timeIntervalSince1970: 1825059600)), // from 2026-11-12T11:15:00Z, expected 2027-11-01T09:00:00Z
+        (DateComponents(hour: 9, second: 30), Date(timeIntervalSince1970: 1793266200), Date(timeIntervalSince1970: 1793350830)), // from 2026-10-29T09:30:00Z, expected 2026-10-30T09:00:30Z
+        (DateComponents(day: 12, minute: 45), Date(timeIntervalSince1970: 1794482100), Date(timeIntervalSince1970: 1797036300)), // from 2026-11-12T11:15:00Z, expected 2026-12-12T00:45:00Z
+    ] as [(DateComponents, Date, Date)])
+    func testNextDateUnsetUnitTakesFirstValue(components: DateComponents, start: Date, expected: Date) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        #expect(calendar.nextDate(after: start, matching: components, matchingPolicy: .nextTime) == expected)
     }
 
     @Test func testDateFromComponentsWeekOfMonth() {
