@@ -1044,12 +1044,13 @@ extension Calendar {
     
     /// Each single combination of the component values, in the order RFC 5545 expands them.
     fileprivate func _componentsCombinations(after startDate: Date,
+                                             before limit: Date,
                                              matching combinationComponents: _DateComponentCombinations,
                                              matchingPolicy: MatchingPolicy,
                                              repeatedTimePolicy: RepeatedTimePolicy) -> [DateComponents] {
-        // Months, weeks and days are found one after another, because negative values and weekday ordinals are counted from the month or year that the earlier values chose.
+        // Months, weeks and days are found one after another, because negative values and weekday ordinals are counted from the month or year that the earlier values chose. A value that the period doesn't have, such as a fifth Tuesday, is not looked for past its end.
         func firstMatch(from date: Date, _ comps: DateComponents) -> Date {
-            _nearestMatch(after: date - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: startDate, firstInEachPiece: false)?.0 ?? date
+            _nearestMatch(after: date - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: startDate, before: limit, firstInEachPiece: false)?.0 ?? date
         }
 
         var dates: [(Date, DateComponents)] = [(startDate, DateComponents())]
@@ -1143,7 +1144,7 @@ extension Calendar {
             return results.filter { range.contains($0) }
         }
 
-        return _componentsCombinations(after: start, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy).compactMap { components in
+        return _componentsCombinations(after: start, before: range.upperBound, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy).compactMap { components in
             _nearestMatch(after: start - 0.001, direction: .forward, matching: components, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start, before: range.upperBound, firstInEachPiece: false)?.0
         }.filter { range.contains($0) }
     }
