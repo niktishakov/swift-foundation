@@ -22,6 +22,8 @@ import Darwin
 import WinSDK
 #elseif os(WASI)
 @preconcurrency import WASILibc
+#elseif os(Emscripten)
+@preconcurrency import EmscriptenLibc
 #elseif canImport(_FoundationPlatformExtras)
 import _FoundationPlatformExtras
 #endif
@@ -29,7 +31,7 @@ import _FoundationPlatformExtras
 #if FOUNDATION_FRAMEWORK
 internal import _ForSwiftFoundation
 internal import Synchronization
-#if canImport(os)
+#if canImport(os) && !hasFeature(Embedded)
 internal import os
 #endif
 #endif
@@ -192,7 +194,7 @@ extension _URL {
             }
             switch misuse {
             case .http:
-                #if canImport(os)
+                #if canImport(os) && !hasFeature(Embedded)
                 URL.logger.error("API MISUSE: URL(filePath:) called with an HTTP URL string. Using URL(string:) instead.")
                 #endif
                 // Drop any base URL since we have an HTTP scheme
@@ -202,7 +204,7 @@ extension _URL {
                 }
                 // Fall through to file path handling
             case .file(let compressed):
-                #if canImport(os)
+                #if canImport(os) && !hasFeature(Embedded)
                 URL.logger.error("API MISUSE: URL(filePath:) called with a \"file:\" scheme. Input must only contain a path. Dropping \"file:\" scheme.")
                 #endif
                 path = compressed
@@ -428,7 +430,7 @@ extension _URL {
             let idnaEncoded = (
                 flags.contains([.didEncodeHost, .hasSpecialScheme]) &&
                 !flags.contains(.isIPLiteral) &&
-                _uidnaHook() != nil
+                RFC3986Parser.supportsIDNA
             )
             if percentEncoded {
                 if !idnaEncoded {
@@ -833,13 +835,13 @@ extension _URL {
         return replacing(info: info).url
     }
 
-    // Prepends "./" to a relative path whose first segment would
-    // otherwise be mistaken for a scheme (RFC 3986 Section 4.2).
-    private func prependDotSlashIfNeeded(_ path: inout OutputSpan<UInt8>) {
-        precondition(path.freeCapacity >= 2, "prependDotSlashIfNeeded requires 2 spare bytes")
+    // Prepends "./" to a relative path whose first segment would otherwise be mistaken for a scheme (RFC 3986 Section 4.2), or "/." to a path whose leading "//" would otherwise be mistaken for an authority (RFC 3986 Section 3.3).
+    private func prependDotSegmentIfNeeded(_ path: inout OutputSpan<UInt8>) {
+        precondition(path.freeCapacity >= 2, "prependDotSegmentIfNeeded requires 2 spare bytes")
         guard flags.isDisjoint(with: [.hasScheme, .hasHost]) else {
             return
         }
+        let startsWithDoubleSlash = path.span.starts(with: "//")
         let hasColonInFirstSegment = {
             for i in 0..<path.count {
                 let byte = path[i]
@@ -851,16 +853,21 @@ extension _URL {
             }
             return false
         }()
-        guard hasColonInFirstSegment else {
+        guard startsWithDoubleSlash || hasColonInFirstSegment else {
             return
         }
-        // Shift path by 2 and prepend "./"
+        // Shift path by 2 and prepend "/." or "./"
         path.append(repeating: 0, count: 2)
         for i in (2..<path.count).reversed() {
             path[i] = path[i - 2]
         }
-        path[0] = ._dot
-        path[1] = ._slash
+        if startsWithDoubleSlash {
+            path[0] = ._slash
+            path[1] = ._dot
+        } else {
+            path[0] = ._dot
+            path[1] = ._slash
+        }
     }
 
     private static func withEncodedURLPath<R>(
@@ -1186,7 +1193,7 @@ extension _URL {
             guard let fsRep else { return nil }
             var fileInfo = stat()
             guard lstat(fsRep, &fileInfo) == 0 else { return nil }
-            return (mode_t(fileInfo.st_mode) & S_IFMT) == S_IFDIR
+            return (mode_t(fileInfo.st_mode) & mode_t(S_IFMT)) == mode_t(S_IFDIR)
         }
         #endif
     }
@@ -1341,7 +1348,7 @@ extension _URL {
                         if isDirectory {
                             newPath.append(._slash)
                         }
-                        prependDotSlashIfNeeded(&newPath)
+                        prependDotSegmentIfNeeded(&newPath)
                         return encodingState
                     }
                     return replacing(info: info).url
@@ -1436,14 +1443,14 @@ extension _URL {
                 guard newPath.count != path.count else {
                     return hasEncodedPath ? .unknown : .notEncoded
                 }
-                prependDotSlashIfNeeded(&newPath)
+                prependDotSegmentIfNeeded(&newPath)
                 return hasEncodedPath ? .unknown : .notEncoded
             }
             return replacing(info: newInfo).url
         }
     }
 
-    #if !NO_FILESYSTEM
+    #if !NO_FILESYSTEM && !hasFeature(Embedded)
     var standardizedFileURL: URL? {
         guard isFileURL else {
             return nil

@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if !DATA_LEGACY_ABI
+#if !DATA_LEGACY_ABI || hasFeature(Embedded)
 
 @available(macOS 10.10, iOS 8.0, watchOS 2.0, tvOS 9.0, *)
 extension Data {
@@ -75,6 +75,7 @@ extension Data {
             if !isKnownUniquelyReferenced(&_storage) {
                 _storage = _storage.mutableCopy(_slice)
             }
+            _storage.ensureUniqueBufferReference()
         }
         
         @available(macOS 10.14.4, iOS 12.2, watchOS 5.2, tvOS 12.2, *)
@@ -89,7 +90,7 @@ extension Data {
             }
             let storage = __DataStorage(capacity: capacity)
             var appendedCount = 0
-            try storage.withUninitializedBytes(extraCapacity: capacity, location: 0, &appendedCount, initializer)
+            try storage.withTrailingUninitializedBytes(extraCapacity: capacity, location: 0, &appendedCount, initializer)
             self.init(storage, count: appendedCount)
         }
 
@@ -153,7 +154,7 @@ extension Data {
                     _slice = _slice.lowerBound..<newUpperBound
                 }
             }
-            try _storage.withUninitializedBytes(extraCapacity: newBytesCount, location: endIndex, &appendedCount, initializer)
+            try _storage.withTrailingUninitializedBytes(extraCapacity: newBytesCount, location: endIndex, &appendedCount, initializer)
         }
         
         @export(implementation) @inline(__always)

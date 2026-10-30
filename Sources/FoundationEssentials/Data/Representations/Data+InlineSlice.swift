@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if DATA_LEGACY_ABI
+#if DATA_LEGACY_ABI && !hasFeature(Embedded)
 
 @available(macOS 10.10, iOS 8.0, watchOS 2.0, tvOS 9.0, *)
 extension Data {
@@ -102,6 +102,7 @@ extension Data {
             if !isKnownUniquelyReferenced(&storage) {
                 storage = storage.mutableCopy(self.range)
             }
+            storage.ensureUniqueBufferReference()
         }
         
         @inlinable // This is @inlinable as trivially computable.
@@ -136,7 +137,7 @@ extension Data {
         #if FOUNDATION_FRAMEWORK
         @abi(mutating func __implementation_reserveCapacity(_ minimumCapacity: Int))
         #endif
-        @export(implementation) // Ensures that newer clients who may be using `__DataStorage.withUninitializedBytes` always use a new copy of reserveCapacity
+        @export(implementation) // Ensures that newer clients who may be using `__DataStorage.withTrailingUninitializedBytes` always use a new copy of reserveCapacity
         mutating func reserveCapacity(_ minimumCapacity: Int) {
             ensureUniqueReference()
             // the current capacity can be zero (representing externally owned buffer), and count can be greater than the capacity
@@ -237,7 +238,7 @@ extension Data {
             defer {
                 slice = slice.lowerBound..<(slice.upperBound + HalfInt(appendedCount))
             }
-            try storage.withUninitializedBytes(extraCapacity: extraCapacity, location: endIndex, &appendedCount, initializer)
+            try storage.withTrailingUninitializedBytes(extraCapacity: extraCapacity, location: endIndex, &appendedCount, initializer)
         }
 
         @inlinable // This is @inlinable as reasonably small.

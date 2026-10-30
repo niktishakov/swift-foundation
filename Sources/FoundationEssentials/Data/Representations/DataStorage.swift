@@ -43,7 +43,7 @@ internal final class __DataStorage : @unchecked Sendable {
     @usableFromInline static let maxSize = Int.max >> 1
     @usableFromInline static let vmOpsThreshold = Platform.pageSize * 4
 
-    #if !DATA_LEGACY_ABI
+    #if !DATA_LEGACY_ABI || hasFeature(Embedded)
     @usableFromInline static let empty = __DataStorage.init(bytes: nil, length: 0)
     #endif
 
@@ -194,7 +194,7 @@ internal final class __DataStorage : @unchecked Sendable {
         }
     }
 
-#if DATA_LEGACY_ABI
+#if DATA_LEGACY_ABI && !hasFeature(Embedded)
     @abi(func withUnsafeBytes<R>(in: Range<Int>, apply: (UnsafeRawBufferPointer) throws -> R) throws -> R)
     @available(macOS, obsoleted: 1.0)
     @available(iOS, obsoleted: 1.0)
@@ -220,7 +220,7 @@ internal final class __DataStorage : @unchecked Sendable {
         }
     }
 
-#if DATA_LEGACY_ABI
+#if DATA_LEGACY_ABI && !hasFeature(Embedded)
     @abi(func withUnsafeMutableBytes<R>(in: Range<Int>, apply: (UnsafeMutableRawBufferPointer) throws -> R) throws -> R)
     @available(macOS, obsoleted: 1.0)
     @available(iOS, obsoleted: 1.0)
@@ -294,7 +294,7 @@ internal final class __DataStorage : @unchecked Sendable {
     var isExternallyOwned: Bool {
         // all __DataStorages will have some sort of capacity, because empty cases hit the .empty enum _Representation
         // anything with 0 capacity means that we have not allocated this pointer and consequently mutation is not ours to make.
-        return _capacity == 0
+        return capacity == 0
     }
     
     @usableFromInline // This is not @inlinable as it is a non-trivial, non-generic function.
@@ -445,16 +445,23 @@ internal final class __DataStorage : @unchecked Sendable {
     
     @available(macOS 10.14.4, iOS 12.2, watchOS 5.2, tvOS 12.2, *)
     @export(implementation)
-    func withUninitializedBytes<Result: ~Copyable, E: Error>(
+    func withTrailingUninitializedBytes<Result: ~Copyable, E: Error>(
       extraCapacity: Int, location: Int, _ appendedCount: inout Int, _ initializer: (inout OutputRawSpan) throws(E) -> Result
     ) throws(E) -> Result {
         // We use the requested capacity to build the `OutputRawSpan`. The requested capacity may be less than the actual capacity.
-        assert((_length + extraCapacity) <= capacity)
-        let buffer = UnsafeMutableRawBufferPointer(start: mutableBytes!.advanced(by: location), count: extraCapacity)
+        let offsetLocation = location - _offset
+        assert((offsetLocation + extraCapacity) <= capacity)
+        assert(offsetLocation <= _length)
+        let buffer = UnsafeMutableRawBufferPointer(start: _bytes!.advanced(by: offsetLocation), count: extraCapacity)
         var outputSpan = OutputRawSpan(buffer: buffer, initializedCount: 0)
         defer {
             appendedCount = outputSpan.finalize(for: buffer)
-            _length &+= appendedCount
+            let resultingLength = offsetLocation + appendedCount
+            if resultingLength > _length {
+                _length = resultingLength
+            } else if resultingLength < _length {
+                setLength(resultingLength)
+            }
             outputSpan = OutputRawSpan()
         }
         return try initializer(&outputSpan)
@@ -580,9 +587,9 @@ internal final class __DataStorage : @unchecked Sendable {
                 mutableBytes!.advanced(by: trailingDestination).copyMemory(from: mutableBytes!.advanced(by: trailingLocation), byteCount: trailingLength)
             }
             let newLength = trailingDestination - _offset + trailingLength
-            if insertedLength > replacedLength {
+            if newLength > _length {
                 _length = newLength
-            } else if insertedLength < replacedLength {
+            } else if newLength < _length {
                 setLength(newLength)
             }
             endIndex += insertedLength - replacedLength
@@ -678,7 +685,7 @@ internal final class __DataStorage : @unchecked Sendable {
                 dealloc(bytes_, length)
             }
         } else if !copy {
-            _capacity = length
+            _capacity = 0 // A capacity of 0 signals that the buffer is unowned and must be copied before mutations
             _length = length
             _needToZero = false
             _bytes = bytes
