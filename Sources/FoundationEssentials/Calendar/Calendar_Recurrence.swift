@@ -1050,7 +1050,7 @@ extension Calendar {
                                              repeatedTimePolicy: RepeatedTimePolicy) -> [DateComponents] {
         // Months, weeks and days are found one after another, because negative values and weekday ordinals are counted from the month or year that the earlier values chose. A value that the period doesn't have, such as a fifth Tuesday, is not looked for past its end.
         func firstMatch(from date: Date, _ comps: DateComponents) -> Date {
-            _nearestMatch(after: date - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: startDate, before: limit, firstInEachPiece: false)?.0 ?? date
+            _firstMatch(from: date, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: startDate, before: limit)?.0 ?? date
         }
 
         var dates: [(Date, DateComponents)] = [(startDate, DateComponents())]
@@ -1145,7 +1145,7 @@ extension Calendar {
         }
 
         return _componentsCombinations(after: start, before: range.upperBound, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy).compactMap { components in
-            _nearestMatch(after: start - 0.001, direction: .forward, matching: components, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start, before: range.upperBound, firstInEachPiece: false)?.0
+            _firstMatch(from: start, matching: components, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start, before: range.upperBound)?.0
         }.filter { range.contains($0) }
     }
 }

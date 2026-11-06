@@ -216,16 +216,22 @@ extension Calendar {
             
             mutating func next() -> Element? {
                 guard !finished else { return nil }
-
-                let match = usesFastPath ? calendar._calendarNextDate(after: searchingDate, matching: matchingComponents, direction: direction) : calendar._nearestMatch(after: searchingDate, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start)?.0
-                guard let match, range?.contains(match) ?? true else {
-                    if match == nil && !usesFastPath {
-                        _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
-                    }
+                guard let match = nextMatch(), range?.contains(match) ?? true else {
                     finished = true
                     return nil
                 }
                 searchingDate = match
+                return match
+            }
+
+            private func nextMatch() -> Date? {
+                if usesFastPath {
+                    return calendar._calendarNextDate(after: searchingDate, matching: matchingComponents, direction: direction)
+                }
+                guard let (match, _) = calendar._nearestMatch(after: searchingDate, direction: direction, matching: matchingComponents, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: start) else {
+                    _handleCalendarResultNotFound(date: start, calendar: calendar, comps: matchingComponents, direction: direction, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy)
+                    return nil
+                }
                 return match
             }
         }
@@ -302,9 +308,33 @@ extension Calendar {
     }
 }
 
+/// Constants of the nested date search in `_nearestMatch`.
+private enum NestedSearch {
+    /// The Gregorian calendar repeats every 400 years, weekdays included (146,097 days is a whole number of weeks), so a date that isn't in 400 years never comes.
+    static let years = 400
+    /// The longest year, so that the window is never shorter than `years`.
+    static let daysPerYear = 366
+    /// How far a search looks before it gives up.
+    static let span = TimeInterval(years * daysPerYear * Calendar._secondsInDay)
+    /// How many pieces a search looks at before it gives up, so that components that never match, such as February 30, end it even where jumps can't skip pieces. 400 years have about 4,800 months and 146,000 days.
+    static let budget = 50_000
+    /// A moment just before a date, to name the piece or the window that ends there.
+    static let justBefore: TimeInterval = 0.001
+    /// To add the wanted nanosecond to a date.
+    static let nanosecondsPerSecond: TimeInterval = 1_000_000_000
+    /// Days 1–7 of a month are the first of their weekday, 8–14 the second, and so on.
+    static let daysPerWeek = 7
+}
+
 extension Calendar {
+    /// A unit that a search walks through, with the components it checks.
+    private struct SearchLevel {
+        let unit: Calendar.Component
+        let checks: [Calendar.Component]
+    }
+
     /// The units a search walks through, from the largest to the smallest, with the components each one checks.
-    private func _searchLevels(for comps: DateComponents) -> [(Calendar.Component, [Calendar.Component])] {
+    private func _searchLevels(for comps: DateComponents) -> [SearchLevel] {
         let all: [(Calendar.Component, [Calendar.Component])] = [
             (.year, [.era, .year]),
             (.yearForWeekOfYear, [.yearForWeekOfYear]),
@@ -316,13 +346,15 @@ extension Calendar {
             (.minute, [.minute]),
             (.second, [.second]),
         ]
+        // A value counted inside a larger unit needs that unit's level too, even when nothing is set there: a day of the month, a weekday ordinal and a week of the month are counted in their month, a minute in its hour, a second in its minute. A leap month is told apart month by month.
+        let countedIn: [Calendar.Component: Calendar.Component] = [.day: .month, .weekdayOrdinal: .month, .weekOfMonth: .month, .minute: .hour, .second: .minute]
+        var parents = Set(countedIn.compactMap { comps.value(for: $0.key) != nil ? $0.value : nil })
+        if comps.isLeapMonth != nil {
+            parents.insert(.month)
+        }
         return all.compactMap { unit, checks in
             let set = checks.filter { comps.value(for: $0) != nil }
-            // A day of the month, a weekday ordinal and a week of the month are counted inside their month, so the search goes month by month when one is set.
-            let keepMonth = unit == .month && (comps.isLeapMonth != nil || comps.day != nil || comps.weekdayOrdinal != nil || comps.weekOfMonth != nil)
-            // A minute is found directly inside its hour, and a second inside its minute.
-            let keepParent = (unit == .hour && comps.minute != nil) || (unit == .minute && comps.second != nil)
-            return set.isEmpty && !keepMonth && !keepParent ? nil : (unit, set)
+            return set.isEmpty && !parents.contains(unit) ? nil : SearchLevel(unit: unit, checks: set)
         }
     }
 
@@ -330,14 +362,19 @@ extension Calendar {
     internal func _nearestMatch(after bound: Date, direction: SearchDirection, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date, before limit: Date? = nil, firstInEachPiece: Bool = true) -> (Date, Bool)? {
         let levels = _searchLevels(for: comps)
         guard !levels.isEmpty else { return nil }
+        // The day of the month fixes the weekday ordinal: days 1–7 are the first of their weekday, 8–14 the second, and so on.
+        if let day = comps.day, let ordinal = comps.weekdayOrdinal, day > 0, ordinal > 0, (day - 1) / NestedSearch.daysPerWeek + 1 != ordinal {
+            return nil
+        }
         let backward = direction == .backward
         // Only the first match inside each piece of the largest unit that is set counts, so November and 9 o'clock match November 1 at 9:00 once a year. In the smallest unit a match is the start of the piece anyway.
-        let firstOnlyIndex = firstInEachPiece ? levels.firstIndex { !$0.1.isEmpty }.flatMap { $0 < levels.count - 1 ? $0 : nil } : nil
+        var firstOnlyIndex: Int?
+        if firstInEachPiece, let largest = levels.firstIndex(where: { !$0.checks.isEmpty }), largest < levels.count - 1 {
+            firstOnlyIndex = largest
+        }
         // The nanosecond is added to the start of the smallest unit that is found.
-        let nanosecond = TimeInterval(comps.nanosecond ?? 0) / 1_000_000_000
-        // How far a search looks before it gives up, and how many pieces it looks at, so that components that never match, such as February 30, end the search.
-        let span: TimeInterval = 400 * 366 * 86400
-        var budget = 50_000
+        let nanosecond = TimeInterval(comps.nanosecond ?? 0) / NestedSearch.nanosecondsPerSecond
+        var budget = NestedSearch.budget
 
         func isBeyondBound(_ date: Date) -> Bool {
             backward ? date < bound : date > bound
@@ -359,30 +396,34 @@ extension Calendar {
         // The first match of the whole piece around `current`, which a search backward finds too. The bound can cut the piece, so the match counts only when it is beyond the bound.
         func firstMatch(in current: DateInterval, _ index: Int) -> (Date, Bool)? {
             // When the bound itself matches, as a previous match of an enumeration does, the first match of its piece is not after it.
-            if !backward, comps.nanosecond == nil, comps.isLeapMonth == nil, levels.allSatisfy({ $0.1.allSatisfy { component($0, from: bound) == comps.value(for: $0) } }) {
+            if !backward, comps.nanosecond == nil, comps.isLeapMonth == nil, levels.allSatisfy({ $0.checks.allSatisfy { component($0, from: bound) == comps.value(for: $0) } }) {
                 return nil
             }
-            guard var whole = dateInterval(of: levels[index].0, for: current.start) else { return nil }
+            guard var whole = dateInterval(of: levels[index].unit, for: current.start) else { return nil }
             // A week is cut by its month when the month is searched too.
-            if index > 0, let parent = dateInterval(of: levels[index - 1].0, for: current.start) {
+            if index > 0, let parent = dateInterval(of: levels[index - 1].unit, for: current.start) {
                 whole = DateInterval(start: max(whole.start, parent.start), end: min(whole.end, parent.end))
             }
             // Searching forward, the other policy keeps the same occurrence of a repeated time as searching backward.
-            guard let first = _nearestMatch(after: whole.start - 0.001, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: backward ? (repeatedTimePolicy == .first ? .last : .first) : repeatedTimePolicy, originalStart: originalStart, before: min(whole.end, limit ?? whole.end), firstInEachPiece: false), isBeyondBound(first.0) else { return nil }
+            let forwardPolicy: RepeatedTimePolicy = backward ? (repeatedTimePolicy == .first ? .last : .first) : repeatedTimePolicy
+            let end = min(whole.end, limit ?? whole.end)
+            guard let first = _firstMatch(from: whole.start, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: forwardPolicy, originalStart: originalStart, before: end),
+                  isBeyondBound(first.0) else { return nil }
             return first
         }
 
         func search(_ window: DateInterval, _ index: Int) -> (Date, Bool)? {
             guard index < levels.count else {
                 // A piece that the bound cuts starts at the bound, not at the start of its unit.
-                let start = !backward && window.start == bound ? dateInterval(of: levels[index - 1].0, for: bound)?.start ?? bound : window.start
+                let start = !backward && window.start == bound ? dateInterval(of: levels[index - 1].unit, for: bound)?.start ?? bound : window.start
                 let match = start + nanosecond
                 return match < window.end && isBeyondBound(match) ? (match, true) : nil
             }
-            let (unit, checks) = levels[index]
+            let unit = levels[index].unit
+            let checks = levels[index].checks
 
             // Every hour has the same minutes and every minute the same seconds, so the piece is found directly.
-            if unit == .minute || unit == .second, let wanted = comps.value(for: unit), let length = fixedLength(unit), let parent = dateInterval(of: levels[index - 1].0, for: window.start) {
+            if unit == .minute || unit == .second, let wanted = comps.value(for: unit), let length = fixedLength(unit), let parent = dateInterval(of: levels[index - 1].unit, for: window.start) {
                 let start = parent.start + Double(wanted) * length
                 // The search can start inside the wanted minute or second.
                 guard window.start < start + length, start < window.end else { return nil }
@@ -404,7 +445,14 @@ extension Calendar {
                 return true
             }
             // A value that time skips over makes sense only for the single value of a time unit, a day number or a leap month. A month number that a year doesn't have is searched for in other years.
-            let gapComponent: Calendar.Component? = checks.count == 1 && [.day, .hour, .minute, .second].contains(checks[0]) || (checks == [.month] && comps.isLeapMonth == true) ? checks[0] : nil
+            let gapComponent: Calendar.Component?
+            if checks.count == 1, [.day, .hour, .minute, .second].contains(checks[0]) {
+                gapComponent = checks[0]
+            } else if checks == [.month], comps.isLeapMonth == true {
+                gapComponent = .month
+            } else {
+                gapComponent = nil
+            }
             // Months are ordered with a leap month right after the month it repeats.
             func monthKey(_ month: Int, isLeap: Bool?) -> Int {
                 month * 2 + (isLeap == true ? 1 : 0)
@@ -429,84 +477,115 @@ extension Calendar {
             }
             let wanted: Int? = gapComponent == .month ? comps.month.map { monthKey($0, isLeap: comps.isLeapMonth) } : gapComponent.flatMap { comps.value(for: $0) }
             // A missing day is replaced only in a month that is asked for, or when the search goes month by month at the top. Inside a quarter or a year, a later month can have the day.
-            let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].0 == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
+            let wholeMonth = gapComponent == .day && index > 0 && levels[index - 1].unit == .month && (comps.month != nil || index == 1) && dateInterval(of: .month, for: window.start)?.end == window.end
 
-            let isTimeUnit = unit == .hour || unit == .minute || unit == .second
-            var t = backward ? window.end - 0.001 : window.start
-            var previous: (piece: DateInterval, value: Int)?
-            // A day can start after midnight when the clock skips it, so an hour is compared with the last hour of the day before too.
-            let hourBefore = unit == .hour && gapComponent == .hour && dateInterval(of: .day, for: window.start)?.start == window.start ? dateInterval(of: .hour, for: window.start - 0.001) : nil
-            if !backward, let hourBefore {
-                previous = (hourBefore, key(hourBefore.start))
+            // Day numbers only grow inside one month, and week numbers inside one week-numbering year. When the window stays inside one of these, the search can jump straight to the wanted value, and once a piece is past it the rest of the window can't match.
+            let countingValue: Int? = {
+                guard let wanted = comps.value(for: unit), let counter: Calendar.Component = unit == .day ? .month : unit == .weekOfYear ? .yearForWeekOfYear : nil,
+                      component(counter, from: window.start) == component(counter, from: window.end - NestedSearch.justBefore) else { return nil }
+                return wanted
+            }()
+            // A window whose values are all before or all after the wanted one can't match, unless a matching policy fills the gap.
+            if let countingValue, gapComponent == nil || matchingPolicy == .strict,
+               countingValue < component(unit, from: window.start) || countingValue > component(unit, from: window.end - NestedSearch.justBefore) {
+                return nil
             }
-            // Hours wrap at midnight.
+            // The value the search can jump to: a day or week number in a window where it only grows, or a month, an hour, a minute or a second, which wrap around.
+            let jumpTarget = countingValue ?? (periods(unit) != nil && comps.isLeapMonth == nil ? comps.value(for: unit) : nil)
+            let isTimeUnit = unit == .hour || unit == .minute || unit == .second
+            var t = backward ? window.end - NestedSearch.justBefore : window.start
+            typealias Neighbor = (piece: DateInterval, value: Int)
+            // Hours wrap at midnight and days at the end of a month.
             func isSkipped(_ wanted: Int, between earlierValue: Int, and laterValue: Int) -> Bool {
-                earlierValue < laterValue ? earlierValue < wanted && wanted < laterValue : earlierValue > laterValue && unit == .hour && (earlierValue < wanted || wanted < laterValue)
+                earlierValue < laterValue ? earlierValue < wanted && wanted < laterValue : earlierValue > laterValue && (unit == .hour || unit == .day) && (earlierValue < wanted || wanted < laterValue)
+            }
+            // The date next to a gap, when the wanted value is skipped between two neighboring pieces, given in the order the search reaches them.
+            func dateNearGap(_ first: Neighbor, _ second: Neighbor) -> Date? {
+                guard matchingPolicy != .strict, let wanted else { return nil }
+                let (earlier, later) = backward ? (second, first) : (first, second)
+                guard isSkipped(wanted, between: earlier.value, and: later.value), let candidate = nearGap(before: earlier.piece, after: later.piece.start), isBeyondBound(candidate) else { return nil }
+                return candidate
+            }
+            // The pieces just outside the window, so that a gap at its edge is found too: an hour skipped at midnight lies between the last hour of the day before and the first hour of the day, and a day after the end of a short month between its last day and the first day of the next month.
+            func neighbor(at t: Date) -> Neighbor? {
+                dateInterval(of: unit, for: t).map { ($0, key($0.start)) }
+            }
+            let edgeBefore = gapComponent == .hour && dateInterval(of: .day, for: window.start)?.start == window.start ? neighbor(at: window.start - NestedSearch.justBefore) : nil
+            let edgeAfter = wholeMonth ? neighbor(at: window.end) : nil
+            var previous = backward ? edgeAfter : edgeBefore
+            // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
+            func isOtherOccurrence(_ current: DateInterval) -> Bool {
+                guard isTimeUnit, !checks.isEmpty else { return false }
+                let wantsLaterOccurrence = (repeatedTimePolicy == .first) == backward
+                let neighborTime = wantsLaterOccurrence ? current.end : current.start - NestedSearch.justBefore
+                // The neighbor is another piece of the unit, not the rest of this one cut by the bound.
+                guard let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime) else { return false }
+                return neighbor.start != own.start && fits(neighbor.start)
+            }
+            // The next level inside a matching piece. Searching forward, a piece that the bound doesn't cut gives its first match anyway.
+            func searchInside(_ current: DateInterval) -> (Date, Bool)? {
+                index == firstOnlyIndex && (backward || current.start == bound) ? firstMatch(in: current, index) : search(current, index + 1)
+            }
+            // Where the next piece starts, or `nil` when the rest of the window can't match. The search jumps straight to the wanted value instead of stepping through every piece. A daylight saving time change, or a calendar with 13 months, can make the jump miss; then the check after the jump fails and the search keeps stepping, which also finds gaps.
+            func nextStart(after current: DateInterval) -> (start: Date, jumped: Bool)? {
+                let t = backward ? current.start - NestedSearch.justBefore : current.end
+                guard let wanted = jumpTarget, window.start <= t, t < window.end else { return (t, false) }
+                let value = component(unit, from: t)
+                let currentValue = component(unit, from: current.start)
+                // Day and week numbers only grow in this window: once a piece is past the wanted value, the rest can't match.
+                if countingValue != nil, backward ? currentValue < wanted : currentValue > wanted {
+                    return nil
+                }
+                let steps: Int
+                if let period = periods(unit) {
+                    // Months, hours, minutes and seconds wrap around, so the distance is counted around the circle. Don't jump over a gap right after this piece: the step finds it.
+                    let skipsGap = backward ? isSkipped(wanted, between: value, and: currentValue) : isSkipped(wanted, between: currentValue, and: value)
+                    steps = skipsGap ? 0 : (backward ? value - wanted + period : wanted - value + period) % period
+                } else {
+                    steps = backward ? value - wanted : wanted - value
+                }
+                guard steps > 0 else { return (t, false) }
+                let delta = backward ? -steps : steps
+                let jumped: Date? = if let length = fixedLength(unit) { t + Double(delta) * length } else { date(byAdding: unit, value: delta, to: t) }
+                guard let jumped, window.start <= jumped, jumped < window.end, component(unit, from: jumped) == wanted else { return (t, false) }
+                return (jumped, true)
             }
             while backward ? t >= window.start : t < window.end {
                 budget -= 1
                 guard budget > 0, let current = piece(at: t) else { return nil }
-                if matches(current) {
-                    // When a time repeats, only one of its occurrences counts: `.first` is the one the search reaches first, `.last` the other one.
-                    var isSkippedRepeat = false
-                    if isTimeUnit, !checks.isEmpty {
-                        let neighborTime = (repeatedTimePolicy == .first) == backward ? current.end : current.start - 0.001
-                        // The neighbor is another piece of the unit, not the rest of this one cut by the bound.
-                        if let own = dateInterval(of: unit, for: current.start), let neighbor = dateInterval(of: unit, for: neighborTime), neighbor.start != own.start, fits(neighbor.start) {
-                            isSkippedRepeat = true
-                        }
-                    }
-                    // Searching forward, a piece that the bound doesn't cut gives its first match anyway.
-                    if !isSkippedRepeat, let found = index == firstOnlyIndex && (backward || current.start == bound) ? firstMatch(in: current, index) : search(current, index + 1) {
-                        return found
-                    }
+                if matches(current), !isOtherOccurrence(current), let found = searchInside(current) {
+                    return found
                 }
-                if matchingPolicy != .strict, gapComponent != nil, let wanted {
-                    let value = key(current.start)
-                    var gap: (before: DateInterval, after: Date)?
-                    if let previous {
-                        // The wanted value is skipped between two neighboring pieces.
-                        let (earlier, later, earlierValue, laterValue) = backward ? (current, previous.piece, value, previous.value) : (previous.piece, current, previous.value, value)
-                        if isSkipped(wanted, between: earlierValue, and: laterValue) {
-                            gap = (earlier, later.start)
-                        }
-                    } else if backward, wholeMonth, value < wanted {
-                        // The month ends before the wanted day.
-                        gap = (current, window.end)
-                    }
-                    if gap == nil, backward, let hourBefore, current.start == window.start, isSkipped(wanted, between: key(hourBefore.start), and: value) {
-                        gap = (hourBefore, current.start)
-                    }
-                    if let gap, let candidate = nearGap(before: gap.before, after: gap.after), isBeyondBound(candidate) {
-                        return (candidate, false)
-                    }
+                let neighbor: Neighbor? = gapComponent != nil ? (current, key(current.start)) : nil
+                if let previous, let neighbor, let candidate = dateNearGap(previous, neighbor) {
+                    return (candidate, false)
                 }
-                previous = gapComponent != nil ? (current, key(current.start)) : nil
-                t = backward ? current.start - 0.001 : current.end
-                // A month, an hour, a minute or a second can jump straight to the wanted value instead of stepping through every piece. A daylight saving time change can make the jump miss; then the search keeps stepping, which also finds gaps.
-                if let period = periods(unit), comps.isLeapMonth == nil, let wanted = comps.value(for: unit), window.start <= t, t < window.end {
-                    let value = component(unit, from: t)
-                    let currentValue = component(unit, from: current.start)
-                    // Don't jump over a gap right after this piece: the step finds it.
-                    let skipsGap = backward ? isSkipped(wanted, between: value, and: currentValue) : isSkipped(wanted, between: currentValue, and: value)
-                    let steps = backward ? (value - wanted + period) % period : (wanted - value + period) % period
-                    if !skipsGap, steps > 0 {
-                        let delta = backward ? -steps : steps
-                        let jumped: Date? = if let length = fixedLength(unit) { t + Double(delta) * length } else { date(byAdding: unit, value: delta, to: t) }
-                        if let jumped, window.start <= jumped, jumped < window.end, component(unit, from: jumped) == wanted {
-                            t = jumped
-                            previous = nil
-                        }
-                    }
+                previous = neighbor
+                guard let next = nextStart(after: current) else { break }
+                t = next.start
+                if next.jumped {
+                    previous = nil
                 }
             }
-            // Searching forward, the month can end before the wanted day.
-            if !backward, matchingPolicy != .strict, wholeMonth, let wanted, let previous, previous.value < wanted, let candidate = nearGap(before: previous.piece, after: window.end), isBeyondBound(candidate) {
+            // A gap at the edge of the window that the search reaches last.
+            if let previous, let edge = backward ? edgeBefore : edgeAfter, let candidate = dateNearGap(previous, edge) {
                 return (candidate, false)
             }
             return nil
         }
-        return search(backward ? DateInterval(start: bound - span, end: bound) : DateInterval(start: bound, end: max(bound, min(bound + span, limit ?? .distantFuture))), 0)
+        // The whole search window: `span` from the bound in the search direction, cut by the limit.
+        let window: DateInterval
+        if backward {
+            window = DateInterval(start: bound - NestedSearch.span, end: bound)
+        } else {
+            window = DateInterval(start: bound, end: max(bound, min(bound + NestedSearch.span, limit ?? .distantFuture)))
+        }
+        return search(window, 0)
+    }
+
+    /// The first match at or after `date` and before `limit`, counting every match in a piece, not only the first.
+    internal func _firstMatch(from date: Date, matching comps: DateComponents, matchingPolicy: MatchingPolicy, repeatedTimePolicy: RepeatedTimePolicy, originalStart: Date, before limit: Date?) -> (Date, Bool)? {
+        _nearestMatch(after: date - NestedSearch.justBefore, direction: .forward, matching: comps, matchingPolicy: matchingPolicy, repeatedTimePolicy: repeatedTimePolicy, originalStart: originalStart, before: limit, firstInEachPiece: false)
     }
 
     /// How many values a unit that the search can jump through has.
@@ -522,8 +601,8 @@ extension Calendar {
     /// The length of a unit that is always the same, which a jump can add without asking the calendar.
     private func fixedLength(_ unit: Calendar.Component) -> TimeInterval? {
         switch unit {
-        case .hour: 3600
-        case .minute: 60
+        case .hour: TimeInterval(Calendar._secondsInHour)
+        case .minute: TimeInterval(Calendar._secondsInMinute)
         case .second: 1
         default: nil
         }
