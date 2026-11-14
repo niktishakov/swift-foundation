@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+##===----------------------------------------------------------------------===##
+##
+## This source file is part of the Swift.org open source project
+##
+## Copyright (c) 2026 Apple Inc. and the Swift project authors
+## Licensed under Apache License v2.0 with Runtime Library Exception
+##
+## See https://swift.org/LICENSE.txt for license information
+## See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+##
+##===----------------------------------------------------------------------===##
+
+# Packs the bitmap data of the built-in character sets: stores each distinct page of the generated CFUniCharBitmapData.inc.h once, and writes each plane as the indexes of its pages.
+#
+# Usage:
+#   build-character-set-bitmap-data --input=path/to/generated/CFUniCharBitmapData.inc.h \
+#                                   [--output=path/to/CFUniCharBitmapData.inc.h]
+#
+# --input: path to the generated header, where each plane is 8192 bytes.
+# --output: path to the packed header (default: in the source tree).
+
+set -eu
+
+declare -r commandName="$(basename "$0")"
+declare -r utilsDir="$(cd "$(dirname "$0")" && pwd)"
+declare -r foundationRepoDir="$(cd "${utilsDir}/.." && pwd)"
+declare -r outputDefault="${foundationRepoDir}/Sources/_FoundationCShims/include/CFUniCharBitmapData.inc.h"
+
+INPUT="${INPUT:-}"
+OUTPUT="${OUTPUT:-${outputDefault}}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --input=*)         INPUT="${arg#--input=}" ;;
+    --output=*)        OUTPUT="${arg#--output=}" ;;
+    --help|-h)
+      echo "Usage: ${commandName} --input=path [--output=path]" 1>&2
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: ${arg}" 1>&2
+      echo "Try --help." 1>&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ ! -f "${INPUT}" ]]; then
+  echo "error: generated header not found at '${INPUT}'" 1>&2
+  echo "Pass the generated CFUniCharBitmapData.inc.h with --input." 1>&2
+  exit 1
+fi
+
+echo "Packing character set bitmap data" 1>&2
+echo "  from:    ${INPUT}" 1>&2
+echo "  output:  ${OUTPUT}" 1>&2
+
+bindir=$(mktemp -d -t "${commandName}.XXXXXX")
+trap 'rm -rf "${bindir}"' EXIT
+tool="${bindir}/${commandName}"
+swiftc -parse-as-library "${utilsDir}/${commandName}-impl.swift" -o "${tool}"
+
+env INPUT="${INPUT}" OUTPUT="${OUTPUT}" "${tool}"
+
+echo "Done." 1>&2

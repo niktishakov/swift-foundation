@@ -475,13 +475,10 @@ extension _CharacterSet {
             case .whitespaceAndNewline:
                 return (predefined.isWhitespace(member) || predefined.isNewline(member)) ? !isInverted : isInverted
             default:
-                guard let (span, shouldInvert) = predefined._bitmapPtrForPlane(0) else {
+                guard let (pages, shouldInvert) = predefined._pagesForPlane(0) else {
                     return isInverted
                 }
-                let theChar = UInt16(truncatingIfNeeded: member.value)
-                let byte = span[Int(theChar >> BuiltInUnicodeScalarSet.bitShiftForByte)]
-                let bitMask = UInt32(1) << (theChar & BuiltInUnicodeScalarSet.bitShiftForMask)
-                let isMember = (UInt32(byte) & bitMask) != 0
+                let isMember = predefined._isMemberOfBitmap(member, pages)
                 let memberResult = shouldInvert ? !isMember : isMember
                 return memberResult ? !isInverted : isInverted
             }

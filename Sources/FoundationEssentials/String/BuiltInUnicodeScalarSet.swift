@@ -138,12 +138,6 @@ internal struct BuiltInUnicodeScalarSet {
     func bitmapRepresentation(isInverted: Bool) -> Data {
         let numNonBMPPlanes = isInverted ? 16 : _numberOfPlanes - 1
 
-        // NOTE: When we only need the BMP plane, we use the fast path that uses Data(bytesNoCopy:) that avoids allocating completely.
-        if numNonBMPPlanes == 0 {
-            precondition(bitmapResult(forPlane: 0, isInverted: isInverted) == .bitmapFilled, "BMP plane should always have filled Data")
-            return bitmap(forPlane: 0, isInverted: isInverted)
-        }
-        
         // We pre-calculate numbers of bytes needed, allocate, and then fill.
         let maxLength = Self.byteCount + (Self.byteCount + 1) * numNonBMPPlanes
         return Data(capacity: maxLength) { output in
@@ -171,7 +165,7 @@ internal struct BuiltInUnicodeScalarSet {
                 // There is no plane that covers all values || Plane 14 has language tags
                 return true
             } else {
-                return bitmapPtrForPlane(Int(plane)) != nil
+                return pagesForPlane(Int(plane)) != nil
             }
         } else if charset == .whitespace || charset == .whitespaceAndNewline || charset == .newline {
             return plane == 0 || isInverted
@@ -186,7 +180,7 @@ internal struct BuiltInUnicodeScalarSet {
                 // There is no plane that covers all values
                 return true
             } else {
-                if let _ = bitmapPtrForPlane(Int(plane)) {
+                if let _ = pagesForPlane(Int(plane)) {
                     return true
                 } else {
                     return false
@@ -217,12 +211,12 @@ internal struct BuiltInUnicodeScalarSet {
                     return charInPlane > 0xFFFD
                 } else {
                     // fix for fetching ptr to legal
-                    guard let (dataSpan, shouldInvert) = _bitmapPtrForPlane(Int(planeNo)) else {
+                    guard let (pages, shouldInvert) = _pagesForPlane(Int(planeNo)) else {
                         return true
                     }
 
                     if planeNo < _numberOfPlanes {
-                        let isMember = _isMemberOfBitmap(scalar, dataSpan)
+                        let isMember = _isMemberOfBitmap(scalar, pages)
                         return shouldInvert ? !isMember : isMember
                     }
                 }
@@ -232,21 +226,21 @@ internal struct BuiltInUnicodeScalarSet {
                     return ((charInPlane == 0x01) || ((charInPlane > 0x1F) && (charInPlane < 0x80))) ? true : false
                 } else {
                     // dataPtr will be nil for illegal case, causing the check to fail; the C implementation returns legal pointer for dataPtr
-                    guard let dataSpan = bitmapPtrForPlane(Int(planeNo)) else {
+                    guard let pages = pagesForPlane(Int(planeNo)) else {
                         return false
                     }
 
                     if planeNo < _numberOfPlanes {
-                        return _isMemberOfBitmap(scalar, dataSpan)
+                        return _isMemberOfBitmap(scalar, pages)
                     }
                 }
             } else {
                 // dataPtr will be nil for illegal case, causing the check to fail; the C implementation returns legal pointer for dataPtr
-                guard let dataSpan = bitmapPtrForPlane(Int(planeNo)) else {
+                guard let pages = pagesForPlane(Int(planeNo)) else {
                     return false
                 }
                 if planeNo < _numberOfPlanes {
-                    return _isMemberOfBitmap(scalar, dataSpan)
+                    return _isMemberOfBitmap(scalar, pages)
                 }
             }
             return false
@@ -254,28 +248,57 @@ internal struct BuiltInUnicodeScalarSet {
     }
     
     // CFUniCharIsMemberOfBitmap
-    func _isMemberOfBitmap(_ scalar: Unicode.Scalar, _ span: Span<UInt8>) -> Bool {
+    func _isMemberOfBitmap(_ scalar: Unicode.Scalar, _ pages: Span<UInt16>) -> Bool {
         let theChar = UInt16(truncatingIfNeeded: scalar.value) // intentionally truncated
 
-        let position = span[Int(theChar >> Self.bitShiftForByte)]
+        let byteIndex = Int(theChar >> Self.bitShiftForByte)
+        let position = Self.page(at: pages[byteIndex / _CharacterSet.__kCFCompactBitmapPageSize])[byteIndex % _CharacterSet.__kCFCompactBitmapPageSize]
         let mask = theChar & Self.bitShiftForMask
         let bitMask = UInt32(1) << mask
         let result = (UInt32(position) & bitMask) != 0
         return result
     }
-    
+
+    // A plane's bitmap is stored as the indexes of its pages, and equal pages are stored once.
+    @_lifetime(immortal)
+    private static func page(at index: UInt16) -> Span<UInt8> {
+        let temp = Span(_unsafeStart: getCFUniCharBitmapPages().advanced(by: Int(index) * _CharacterSet.__kCFCompactBitmapPageSize), count: _CharacterSet.__kCFCompactBitmapPageSize)
+        return unsafe _overrideLifetime(temp, copying: ())
+    }
+
+    // Appends the first `count` bytes of a plane's bitmap. A whole page is copied as 8-byte words, because that is faster than a call that copies one page.
+    private static func append(pages: Span<UInt16>, isInverted: Bool, count: Int, to output: inout OutputSpan<UInt8>) {
+        let pageSize = _CharacterSet.__kCFCompactBitmapPageSize
+        output.withUnsafeMutableBufferPointer { buffer, initializedCount in
+            let destination = UnsafeMutableRawPointer(buffer.baseAddress.unsafelyUnwrapped.advanced(by: initializedCount))
+            let wholePages = count / pageSize
+            for pageNumber in 0..<wholePages {
+                let source = page(at: pages[pageNumber]).bytes
+                for offset in stride(from: 0, to: pageSize, by: MemoryLayout<UInt64>.size) {
+                    let word = source.load(fromByteOffset: offset, as: UInt64.self)
+                    destination.storeBytes(of: isInverted ? ~word : word, toByteOffset: pageNumber * pageSize + offset, as: UInt64.self)
+                }
+            }
+            for offset in wholePages * pageSize..<count {
+                let byte = page(at: pages[wholePages])[offset % pageSize]
+                destination.storeBytes(of: isInverted ? ~byte : byte, toByteOffset: offset, as: UInt8.self)
+            }
+            initializedCount += count
+        }
+    }
+
     // CFUniCharGetBitmapPtrForPlane
-    // Returns nil for whitespace, whitespaceAndNewline, newline.
+    // Returns the page indexes of the plane's bitmap. Returns nil for whitespace, whitespaceAndNewline, newline.
     // For callers that only need to check plane membership (not inversion), use this wrapper.
     @_lifetime(immortal)
-    internal func bitmapPtrForPlane(_ plane: Int) -> Span<UInt8>? {
-        _bitmapPtrForPlane(plane)?.span
+    internal func pagesForPlane(_ plane: Int) -> Span<UInt16>? {
+        _pagesForPlane(plane)?.pages
     }
 
     // Full version used internally; the `shouldInvert` flag indicates that the stored bitmap
     // is the LEGAL set (for illegal charset) and callers must invert membership results.
     @_lifetime(immortal)
-    internal func _bitmapPtrForPlane(_ plane: Int) -> (span: Span<UInt8>, shouldInvert: Bool)? {
+    internal func _pagesForPlane(_ plane: Int) -> (pages: Span<UInt16>, shouldInvert: Bool)? {
         switch charset {
         case .whitespace, .whitespaceAndNewline, .newline:
             return nil
@@ -294,35 +317,17 @@ internal struct BuiltInUnicodeScalarSet {
                 return nil
             }
 
-            let temp = Span(_unsafeStart: planePtr, count: Self.byteCount)
-            let span = unsafe _overrideLifetime(temp, copying: ())
+            let temp = Span(_unsafeStart: planePtr, count: _CharacterSet.__kCFCompactBitmapNumPages)
+            let pages = unsafe _overrideLifetime(temp, copying: ())
             // For .illegal, the bitmap encodes LEGAL scalars, so membership must be inverted
-            return (span, shouldInvert: charset == .illegal)
+            return (pages, shouldInvert: charset == .illegal)
         }
     }
     
     // CFUniCharGetBitmapForPlane
     internal func bitmap(forPlane plane: Int, isInverted: Bool) -> Data {
-        
-        if let (src, invertBitmapData) = _bitmapPtrForPlane(plane) {
-            let shouldInvert = invertBitmapData ? !isInverted : isInverted
-            
-            // Fast path: for non-inverted, initialize Data using the pointer to avoid allocation
-            if !shouldInvert {
-                // Not actually unsafe because lifetime of src is immortal
-                let data = src.withUnsafeBufferPointer { buffer in
-                    Data(
-                        bytesNoCopy: UnsafeMutableRawPointer(mutating: buffer.baseAddress!),
-                        count: Self.byteCount,
-                        deallocator: .none
-                    )
-                }
-                return data
-            }
-        }
         switch bitmapResult(forPlane: plane, isInverted: isInverted) {
         case .bitmapFilled:
-            // Slower path: for inverted / illegal case, we need to initialize new Data and fill it
             return Data(capacity: Self.byteCount) { output in
                 output.withOutputSpan(of: UInt8.self) { typedOutput in
                     appendBitmap(forPlane: plane, isInverted: isInverted, to: &typedOutput)
@@ -336,7 +341,7 @@ internal struct BuiltInUnicodeScalarSet {
     }
 
     internal func bitmapResult(forPlane plane: Int, isInverted: Bool) -> BitmapResult {
-        if bitmapPtrForPlane(plane) != nil {
+        if pagesForPlane(plane) != nil {
             return .bitmapFilled
         }
         switch charset {
@@ -353,15 +358,8 @@ internal struct BuiltInUnicodeScalarSet {
         let byteCount = min(output.freeCapacity, Self.byteCount)
         precondition(byteCount > 0)
 
-        if let (src, invertBitmapData) = _bitmapPtrForPlane(plane) {
-            let shouldInvert = invertBitmapData ? !isInverted : isInverted
-            if shouldInvert {
-                for i in 0..<byteCount {
-                    output.append(~src[i])
-                }
-            } else {
-                output._append(copying: src.extracting(0..<byteCount))
-            }
+        if let (pages, invertBitmapData) = _pagesForPlane(plane) {
+            Self.append(pages: pages, isInverted: invertBitmapData != isInverted, count: byteCount, to: &output)
             return
         }
 
