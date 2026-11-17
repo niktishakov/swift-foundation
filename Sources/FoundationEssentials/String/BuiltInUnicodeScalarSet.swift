@@ -171,7 +171,7 @@ internal struct BuiltInUnicodeScalarSet {
                 // There is no plane that covers all values || Plane 14 has language tags
                 return true
             } else {
-                return bitmapPtrForPlane(Int(plane)) != nil
+                return hasBitmap(forPlane: Int(plane))
             }
         } else if charset == .whitespace || charset == .whitespaceAndNewline || charset == .newline {
             return plane == 0 || isInverted
@@ -186,11 +186,7 @@ internal struct BuiltInUnicodeScalarSet {
                 // There is no plane that covers all values
                 return true
             } else {
-                if let _ = bitmapPtrForPlane(Int(plane)) {
-                    return true
-                } else {
-                    return false
-                }
+                return hasBitmap(forPlane: Int(plane))
             }
         }
     }
@@ -217,13 +213,12 @@ internal struct BuiltInUnicodeScalarSet {
                     return charInPlane > 0xFFFD
                 } else {
                     // fix for fetching ptr to legal
-                    guard let (dataSpan, shouldInvert) = _bitmapPtrForPlane(Int(planeNo)) else {
+                    guard let isLegal = bitmapContains(scalar) else {
                         return true
                     }
 
                     if planeNo < _numberOfPlanes {
-                        let isMember = _isMemberOfBitmap(scalar, dataSpan)
-                        return shouldInvert ? !isMember : isMember
+                        return !isLegal
                     }
                 }
             } else if charset == .controlAndFormatter {
@@ -232,21 +227,21 @@ internal struct BuiltInUnicodeScalarSet {
                     return ((charInPlane == 0x01) || ((charInPlane > 0x1F) && (charInPlane < 0x80))) ? true : false
                 } else {
                     // dataPtr will be nil for illegal case, causing the check to fail; the C implementation returns legal pointer for dataPtr
-                    guard let dataSpan = bitmapPtrForPlane(Int(planeNo)) else {
+                    guard let isMember = bitmapContains(scalar) else {
                         return false
                     }
 
                     if planeNo < _numberOfPlanes {
-                        return _isMemberOfBitmap(scalar, dataSpan)
+                        return isMember
                     }
                 }
             } else {
                 // dataPtr will be nil for illegal case, causing the check to fail; the C implementation returns legal pointer for dataPtr
-                guard let dataSpan = bitmapPtrForPlane(Int(planeNo)) else {
+                guard let isMember = bitmapContains(scalar) else {
                     return false
                 }
                 if planeNo < _numberOfPlanes {
-                    return _isMemberOfBitmap(scalar, dataSpan)
+                    return isMember
                 }
             }
             return false
@@ -262,6 +257,90 @@ internal struct BuiltInUnicodeScalarSet {
         let bitMask = UInt32(1) << mask
         let result = (UInt32(position) & bitMask) != 0
         return result
+    }
+
+    // Returns nil when the set has no bitmap for the plane of `scalar`.
+    func bitmapContains(_ scalar: Unicode.Scalar) -> Bool? {
+        let plane = Int(scalar.value >> 16)
+        if plane == 0 {
+            guard let span = bitmapPtrForPlane(0) else {
+                return nil
+            }
+            return _isMemberOfBitmap(scalar, span)
+        }
+        guard let pages = pagesForPlane(plane) else {
+            return nil
+        }
+        let theChar = UInt16(truncatingIfNeeded: scalar.value) // intentionally truncated
+        let byteIndex = Int(theChar >> Self.bitShiftForByte)
+        let byte = Self.page(at: pages[byteIndex / _CharacterSet.__kCFCompactBitmapPageSize])[byteIndex % _CharacterSet.__kCFCompactBitmapPageSize]
+        return byte & (1 << (theChar & Self.bitShiftForMask)) != 0
+    }
+
+    internal func hasBitmap(forPlane plane: Int) -> Bool {
+        plane == 0 ? bitmapPtrForPlane(0) != nil : pagesForPlane(plane) != nil
+    }
+
+    // The bitmap data of the set. Returns nil for whitespace, whitespaceAndNewline, newline.
+    private var bitmapData: __CFUniCharBitmapData? {
+        switch charset {
+        case .whitespace, .whitespaceAndNewline, .newline:
+            return nil
+        default:
+            guard let tableIndex = _bitmapTableIndex else {
+                return nil
+            }
+
+            guard tableIndex < __CFUniCharNumberOfBitmaps else {
+                return nil
+            }
+
+            return getCFUniCharBitmapDataArray().advanced(by: tableIndex).pointee
+        }
+    }
+
+    // Planes other than plane 0 are stored as the indexes of their pages, and equal pages are stored once.
+    @_lifetime(immortal)
+    private func pagesForPlane(_ plane: Int) -> Span<UInt16>? {
+        guard plane > 0, let data = bitmapData, plane < data._numPlanes, let pages = data._planes[plane] else {
+            return nil
+        }
+        return Self.immortalSpan(pages, count: _CharacterSet.__kCFCompactBitmapNumPages)
+    }
+
+    @_lifetime(immortal)
+    private static func page(at index: UInt16) -> Span<UInt8> {
+        immortalSpan(getCFUniCharBitmapPages().advanced(by: Int(index) * _CharacterSet.__kCFCompactBitmapPageSize), count: _CharacterSet.__kCFCompactBitmapPageSize)
+    }
+
+    // Planes assembled from their pages, keyed by the address of their page indexes. A plane is assembled once, so `bitmap(forPlane:)` can return it as `Data` without a copy.
+    private static let assembledPlanes = Mutex<[UInt: UInt]>([:])
+
+    @_lifetime(immortal)
+    private static func assembledPlane(_ pages: Span<UInt16>) -> Span<UInt8> {
+        let key = pages.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        let address = assembledPlanes.withLock { planes in
+            if let address = planes[key] {
+                return address
+            }
+            let plane = UnsafeMutableRawBufferPointer.allocate(byteCount: Self.byteCount, alignment: MemoryLayout<UInt8>.alignment)
+            for pageNumber in 0..<pages.count {
+                page(at: pages[pageNumber]).withUnsafeBytes { page in
+                    UnsafeMutableRawBufferPointer(rebasing: plane[pageNumber * page.count..<(pageNumber + 1) * page.count]).copyMemory(from: page)
+                }
+            }
+            let address = UInt(bitPattern: plane.baseAddress)
+            planes[key] = address
+            return address
+        }
+        return immortalSpan(UnsafePointer<UInt8>(bitPattern: address).unsafelyUnwrapped, count: Self.byteCount)
+    }
+
+    // Use only for memory that is never freed: the static bitmap data and the assembled planes.
+    @_lifetime(immortal)
+    private static func immortalSpan<Element>(_ start: UnsafePointer<Element>, count: Int) -> Span<Element> {
+        let temp = Span(_unsafeStart: start, count: count)
+        return unsafe _overrideLifetime(temp, copying: ())
     }
     
     // CFUniCharGetBitmapPtrForPlane
@@ -280,24 +359,20 @@ internal struct BuiltInUnicodeScalarSet {
         case .whitespace, .whitespaceAndNewline, .newline:
             return nil
         default:
-            guard let tableIndex = _bitmapTableIndex else {
-                return nil
-            }
-
-            guard tableIndex < __CFUniCharNumberOfBitmaps else {
-                return nil
-            }
-            
-            let data = getCFUniCharBitmapDataArray().advanced(by: tableIndex).pointee
-
-            guard plane < data._numPlanes, let planePtr = data._planes[plane] else {
-                return nil
-            }
-
-            let temp = Span(_unsafeStart: planePtr, count: Self.byteCount)
-            let span = unsafe _overrideLifetime(temp, copying: ())
             // For .illegal, the bitmap encodes LEGAL scalars, so membership must be inverted
-            return (span, shouldInvert: charset == .illegal)
+            let shouldInvert = charset == .illegal
+            if plane != 0 {
+                guard let pages = pagesForPlane(plane) else {
+                    return nil
+                }
+                return (Self.assembledPlane(pages), shouldInvert: shouldInvert)
+            }
+
+            guard let data = bitmapData, let planePtr = data._plane0 else {
+                return nil
+            }
+
+            return (Self.immortalSpan(planePtr, count: Self.byteCount), shouldInvert: shouldInvert)
         }
     }
     
@@ -309,7 +384,7 @@ internal struct BuiltInUnicodeScalarSet {
             
             // Fast path: for non-inverted, initialize Data using the pointer to avoid allocation
             if !shouldInvert {
-                // Not actually unsafe because lifetime of src is immortal
+                // Not actually unsafe because plane 0 is static data and an assembled plane is never freed
                 let data = src.withUnsafeBufferPointer { buffer in
                     Data(
                         bytesNoCopy: UnsafeMutableRawPointer(mutating: buffer.baseAddress!),
@@ -336,7 +411,7 @@ internal struct BuiltInUnicodeScalarSet {
     }
 
     internal func bitmapResult(forPlane plane: Int, isInverted: Bool) -> BitmapResult {
-        if bitmapPtrForPlane(plane) != nil {
+        if hasBitmap(forPlane: plane) {
             return .bitmapFilled
         }
         switch charset {
