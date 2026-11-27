@@ -59,11 +59,11 @@ import stdlib_h
 internal import unistd
 
 fileprivate let _pageSize: Int = Int(getpagesize())
+#elseif canImport(_FoundationEmbeddedExtras)
+import _FoundationEmbeddedExtras
+fileprivate let _pageSize: Int = Int(getpagesize())
 #elseif canImport(stdlib_h)
 import stdlib_h
-#elseif canImport(_FoundationPlatformExtras)
-import _FoundationPlatformExtras
-fileprivate let _pageSize: Int = Int(getpagesize())
 #endif // canImport(Darwin)
 
 #if canImport(Bionic)
@@ -354,6 +354,21 @@ extension Platform {
 #endif // !FOUNDATION_FRAMEWORK
 }
 
+#if os(Android)
+// MARK: - Android System Properties
+extension Platform {
+    /// The value of the Android system property `name`, or `nil` if the property isn't set.
+    static func androidSystemProperty(_ name: String) -> String? {
+        withUnsafeTemporaryAllocation(of: CChar.self, capacity: Int(PROP_VALUE_MAX)) { buffer in
+            guard let base = buffer.baseAddress, __system_property_get(name, base) > 0 else {
+                return nil
+            }
+            return String(cString: base)
+        }
+    }
+}
+#endif
+
 // MARK: - Executable Path
 extension Platform {
     /// The path of the main executable.
@@ -530,10 +545,10 @@ extension Platform {
     static let memset = _FoundationDarwinExtras.memset
     static let memcpy = _FoundationDarwinExtras.memcpy
     static let memcmp = _FoundationDarwinExtras.memcmp
-#elseif canImport(_FoundationPlatformExtras)
-    static let calloc = _FoundationPlatformExtras.calloc
-    static let malloc = _FoundationPlatformExtras.malloc
-    static let memcmp = _FoundationPlatformExtras.memcmp
+#elseif canImport(_FoundationEmbeddedExtras)
+    static let calloc = _FoundationEmbeddedExtras.calloc
+    static let malloc = _FoundationEmbeddedExtras.malloc
+    static let memcmp = _FoundationEmbeddedExtras.memcmp
 #elseif !NO_CSHIMS
     // Fall back to the imported C headers
     static let calloc = _FoundationCShims.calloc

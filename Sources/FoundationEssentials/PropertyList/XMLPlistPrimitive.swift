@@ -10,15 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if !FOUNDATION_FRAMEWORK && canImport(Darwin) && !hasFeature(Embedded)
-internal import _FoundationRefs
-#endif
-
-#if !FOUNDATION_FRAMEWORK && canImport(Darwin) && !hasFeature(Embedded)
-internal import BasicContainers
-#endif
-
-#if !hasFeature(Embedded)
 
 
 // Low-level cursor over a single node in a structurally-parsed XML property list, providing fast random access to its fields.
@@ -1248,4 +1239,3 @@ internal func _decodeXMLString(from span: borrowing Span<UInt8>, isSimple: Bool,
 }
 
 
-#endif // !hasFeature(Embedded)

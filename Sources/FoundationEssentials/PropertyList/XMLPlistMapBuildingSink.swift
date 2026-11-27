@@ -10,11 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if !FOUNDATION_FRAMEWORK && canImport(Darwin) && !hasFeature(Embedded)
-internal import BasicContainers
-#endif
-
-#if !hasFeature(Embedded)
 
 
 // MARK: - XMLPlistMapBuildingSink
@@ -22,7 +17,7 @@ internal import BasicContainers
 // `ParseEventSink` that builds an `XMLPlistMap`.
 struct XMLPlistMapBuildingSink: ParseEventSink, ~Copyable {
     typealias Vocabulary = XMLPlistVocabulary
-    typealias Fragment = Void
+    typealias ValueFragment = Void
     typealias Output = XMLPlistMap
 
     /// Bookkeeping for a container that's been opened but not yet finalized.
@@ -237,7 +232,6 @@ struct XMLPlistMapBuildingSink: ParseEventSink, ~Copyable {
         return XMLPlistMap(records: mapData)
     }
 
-    func releaseFragment(_ fragment: consuming Void) {}
+    func releaseValueFragment(_ fragment: consuming Void) {}
 }
 
-#endif // !hasFeature(Embedded)

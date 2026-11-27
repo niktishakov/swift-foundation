@@ -10,11 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if !FOUNDATION_FRAMEWORK && canImport(Darwin) && !hasFeature(Embedded)
-internal import _FoundationRefs
-#endif
-
-#if !hasFeature(Embedded)
 
 
 // MARK: - XMLPlistPrimitiveSource
@@ -206,4 +201,3 @@ struct XMLPlistPrimitiveSource<Filter: ParseEventFilter & ~Copyable>: ParseEvent
     }
 }
 
-#endif // !hasFeature(Embedded)

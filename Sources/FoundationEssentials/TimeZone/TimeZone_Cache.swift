@@ -152,6 +152,11 @@ struct TimeZoneCache : Sendable, ~Copyable {
 #elseif os(WASI) || os(Emscripten)
             // WASI/Emscripten doesn't provide a way to get the current timezone for now, so
             // just return the default GMT timezone.
+#elseif os(Android)
+            // Android has no `TZDEFAULT` link, and `tm_zone` is only an abbreviation that often names another zone or none. The device's time zone identifier is in this system property. When it isn't set, the C library uses GMT too.
+            if let name = Platform.androidSystemProperty("persist.sys.timezone"), let result = fixed(name) {
+                return TimeZone(inner: result)
+            }
 #else
             let buffer = UnsafeMutableBufferPointer<CChar>.allocate(capacity: Int(PATH_MAX + 1))
             defer { buffer.deallocate() }
@@ -181,14 +186,13 @@ struct TimeZoneCache : Sendable, ~Copyable {
                 }
             }
             
-#if os(Linux) || os(Android)
+#if os(Linux)
             // Try localtime
             tzset()
             var t = time(nil)
             var lt : tm = tm()
             localtime_r(&t, &lt)
 
-            // tm_zone is nullable on Android.
             let tm_zone: UnsafePointer<CChar>? = lt.tm_zone
             if let tm_zone, let name = String(validatingUTF8: tm_zone) {
                 if let result = fixed(name) {
@@ -243,7 +247,18 @@ struct TimeZoneCache : Sendable, ~Copyable {
                 fixedTimeZones[identifier] = innerTZ
                 return innerTZ
             } else {
-                if let innerTz = _timeZoneICUClass()?.init(identifier: identifier) {
+#if FOUNDATION_FRAMEWORK || FOUNDATION_BUILTIN_TIMEZONE_DATA
+                // Without ICU, fall back to the built-in time zone data
+                let innerTz: (any _TimeZoneProtocol)?
+                if let icuClass = _timeZoneICUClass() {
+                    innerTz = icuClass.init(identifier: identifier)
+                } else {
+                    innerTz = _TimeZoneRulesBased(identifier: identifier)
+                }
+#else
+                let innerTz = _timeZoneICUClass()?.init(identifier: identifier)
+#endif
+                if let innerTz {
                     fixedTimeZones[identifier] = innerTz
                     return innerTz
                 } else {
